@@ -1,4 +1,4 @@
-// Плавный спин: webp-кэш + ImageBitmap на canvas, фикс. числовой порядок, мобильный слайдер
+// Спин: webp-кэш, числовой порядок, полная предзагрузка, абсолютное управление. Загрузка zip — стабильные JSON-ошибки.
 const $ = s => document.querySelector(s);
 
 const datasetsWrap = $("#datasets");
@@ -25,13 +25,13 @@ let scene, camera, renderer, controls, mesh;
 let raf = 0;
 let currentDatasetId = null;
 
+// canvas для спина
 let canvasSpin = null, ctxSpin = null;
-let bitmaps = [];        // ImageBitmap[]
+let frames = [];     // ImageBitmap[]
 let frameIndex = 0;
 
-let dragging = false, lastX = 0;
-let dragAccumPx = 0;
-let velFrames = 0, velAccum = 0;
+// абсолютное управление
+let dragStartX = 0, dragStartIndex = 0, dragging = false;
 
 document.addEventListener("DOMContentLoaded", () => fetchDatasets());
 
@@ -85,11 +85,16 @@ uploadForm?.addEventListener("submit", async (e) => {
         uploadMsg.textContent = "Введите пароль.";
         return;
     }
+
     uploadMsg.textContent = "Загрузка…";
+    const btn = uploadForm.querySelector("button[type=submit]");
+    btn && (btn.disabled = true);
+
     const fd = new FormData();
     fd.append("zipfile", zipInput.files[0]);
     if (displayNameInput?.value?.trim()) fd.append("display_name", displayNameInput.value.trim());
     fd.append("password", pwd.value.trim());
+
     try {
         const r = await fetch("/api/upload_zip", {method: "POST", body: fd});
         const raw = await r.text();
@@ -98,14 +103,13 @@ uploadForm?.addEventListener("submit", async (e) => {
             j = JSON.parse(raw);
         } catch {
         }
-        if (!r.ok || (j && j.ok === false)) {
-            throw new Error((j && (j.error || j.message)) || raw.slice(0, 200));
-        }
+        if (!r.ok || (j && j.ok === false)) throw new Error((j && (j.error || j.message)) || `HTTP ${r.status}`);
         uploadMsg.textContent = `OK: ${(j?.display_name) || (j?.dataset_id) || "ok"}`;
         await fetchDatasets();
     } catch (e2) {
         uploadMsg.textContent = `Ошибка: ${e2.message}`;
     } finally {
+        btn && (btn.disabled = false);
         zipInput.value = "";
         displayNameInput.value = "";
         pwd.value = "";
@@ -139,7 +143,7 @@ btnHome && (btnHome.onclick = () => {
     btnHome.style.display = "none";
 });
 
-// удаление набора по паролю
+// удаление набора
 btnDelete && (btnDelete.onclick = async () => {
     if (!currentDatasetId) return;
     const pw = prompt("Пароль для удаления:");
@@ -159,9 +163,10 @@ btnDelete && (btnDelete.onclick = async () => {
     }
 });
 
-// ---------- Spin (Canvas + ImageBitmap) ----------
+// ---------- Spin (Canvas + ImageBitmap, абсолютное управление, без инерции) ----------
 async function initSpinView(datasetRel) {
     disposeThree();
+
     if (!canvasSpin) {
         canvasSpin = document.createElement("canvas");
         canvasSpin.id = "spinCanvas";
@@ -170,15 +175,15 @@ async function initSpinView(datasetRel) {
         $("#viewerWrap").appendChild(canvasSpin);
         ctxSpin = canvasSpin.getContext("2d", {alpha: false, desynchronized: true});
     }
+    $("#glcanvas").style.display = "none";
+    canvasSpin.style.display = "block";
     imgSpin.style.display = "none";
     sliderWrap.style.display = "none";
-    canvasSpin.style.display = "block";
     loading.style.display = "block";
     loading.textContent = "Подготовка…";
     resizeSpinCanvas();
-    dragAccumPx = velFrames = velAccum = 0;
 
-    // запросим кадры и ДОПОЛНИТЕЛЬНО ЧИСЛОВО СОРТИРУЕМ на фронте
+    // 1) получаем URL'ы и сортируем ЧИСЛОВО
     const res = await fetch(`/api/spin/${encodeURIComponent(datasetRel)}?w=1280&max=90`, {cache: "no-store"});
     let urls = await res.json();
     const num = u => {
@@ -187,34 +192,35 @@ async function initSpinView(datasetRel) {
     };
     urls = urls.slice().sort((a, b) => num(a) - num(b));
 
-    const {frames} = await preloadBitmaps(urls, (done, total) => {
+    // 2) предзагружаем ВСЕ кадры (порядок сохраняется по индексу)
+    const {bitmaps} = await preloadBitmaps(urls, (done, total) => {
         loading.textContent = `Загрузка кадров… (${done}/${total})`;
     }, 6);
 
-    if (!frames.length) {
+    if (!bitmaps.length) {
         loading.textContent = "Нет кадров";
         return;
     }
 
-    bitmaps = frames;
+    frames = bitmaps;
     frameIndex = 0;
     loading.style.display = "none";
     sliderWrap.style.display = "block";
     drawFrame();
-    setupSpinControls();
+
+    setupSpinControls();   // абсолютное управление
 }
 
 function disposeSpin() {
     cancelAnimationFrame(raf);
     window.removeEventListener("resize", resizeSpinCanvas);
     dragging = false;
-    velFrames = velAccum = 0;
     if (canvasSpin) {
         const ctx = canvasSpin.getContext("2d");
         ctx && ctx.clearRect(0, 0, canvasSpin.width, canvasSpin.height);
     }
-    bitmaps.forEach(b => b.close?.());
-    bitmaps = [];
+    frames.forEach(b => b.close?.());
+    frames = [];
     if (canvasSpin) canvasSpin.style.display = "none";
     sliderWrap.style.display = "none";
 }
@@ -231,8 +237,8 @@ function resizeSpinCanvas() {
 window.addEventListener("resize", resizeSpinCanvas);
 
 function drawFrame() {
-    if (!ctxSpin || !bitmaps.length) return;
-    const bmp = bitmaps[frameIndex % bitmaps.length];
+    if (!ctxSpin || !frames.length) return;
+    const bmp = frames[((frameIndex % frames.length) + frames.length) % frames.length];
     const cw = canvasSpin.width, ch = canvasSpin.height;
     const r = Math.min(cw / bmp.width, ch / bmp.height);
     const w = Math.round(bmp.width * r), h = Math.round(bmp.height * r);
@@ -245,20 +251,12 @@ function drawFrame() {
 
 function pxPerFrame() {
     const w = canvasSpin?.clientWidth || 320;
-    const n = Math.max(1, Math.min(bitmaps.length || 60, 180));
-    return Math.max(2, Math.round(w / n));
-}
-
-function stepFrames(n) {
-    if (!bitmaps.length) return;
-    frameIndex = (frameIndex + n) % bitmaps.length;
-    if (frameIndex < 0) frameIndex += bitmaps.length;
-    slider.value = frameIndex;
-    drawFrame();
+    const n = Math.max(1, frames.length || 60);
+    return Math.max(3, Math.round(w / n));
 }
 
 function setupSpinControls() {
-    slider.max = Math.max(0, bitmaps.length - 1);
+    slider.max = Math.max(0, frames.length - 1);
     slider.value = 0;
     slider.oninput = (e) => {
         frameIndex = parseInt(e.target.value, 10);
@@ -266,27 +264,20 @@ function setupSpinControls() {
     };
 
     const wrap = canvasSpin;
+
     const start = x => {
         dragging = true;
-        lastX = x;
-        velFrames = 0;
-        dragAccumPx = 0;
+        dragStartX = x;
+        dragStartIndex = frameIndex;
     };
     const move = x => {
         if (!dragging) return;
-        const dx = x - lastX;
-        lastX = x;
-        dragAccumPx += dx;
-        const ppf = pxPerFrame();
-        while (dragAccumPx >= ppf) {
-            stepFrames(+1);
-            dragAccumPx -= ppf;
-        }
-        while (dragAccumPx <= -ppf) {
-            stepFrames(-1);
-            dragAccumPx += ppf;
-        }
-        velFrames = velFrames * 0.8 + (dx / ppf) * 0.2;
+        const dx = x - dragStartX;
+        const step = Math.trunc(dx / pxPerFrame());      // кадр = функция абсолютного dx
+        frameIndex = (dragStartIndex + step) % frames.length;
+        if (frameIndex < 0) frameIndex += frames.length;
+        slider.value = frameIndex;
+        drawFrame();
     };
     const end = () => {
         dragging = false;
@@ -307,53 +298,32 @@ function setupSpinControls() {
     };
     wrap.ontouchend = () => end();
 
+    // колесо — дискретные шаги, без инерции
     wrap.onwheel = e => {
         e.preventDefault();
         const delta = (Math.abs(e.deltaX) > Math.abs(e.deltaY)) ? e.deltaX : -e.deltaY;
-        dragAccumPx += delta;
-        const ppf = pxPerFrame();
-        while (dragAccumPx >= ppf) {
-            stepFrames(+1);
-            dragAccumPx -= ppf;
-        }
-        while (dragAccumPx <= -ppf) {
-            stepFrames(-1);
-            dragAccumPx += ppf;
-        }
-        velFrames = velFrames * 0.8 + (delta / ppf) * 0.2;
+        const steps = Math.sign(delta) * Math.max(1, Math.round(Math.abs(delta) / 35));
+        frameIndex = (frameIndex + steps) % frames.length;
+        if (frameIndex < 0) frameIndex += frames.length;
+        slider.value = frameIndex;
+        drawFrame();
     };
-
-    function tick() {
-        raf = requestAnimationFrame(tick);
-        if (!dragging && Math.abs(velFrames) > 0.001) {
-            velAccum += velFrames;
-            const whole = (velAccum > 0) ? Math.floor(velAccum) : Math.ceil(velAccum);
-            if (whole !== 0) {
-                stepFrames(whole);
-                velAccum -= whole;
-            }
-            velFrames *= 0.95;
-        }
-    }
-
-    cancelAnimationFrame(raf);
-    tick();
 }
 
-// предзагрузка строго по индексу
+// предзагрузка ImageBitmap по индексам (сохранение порядка)
 async function preloadBitmaps(urls, onProgress, concurrency = 6) {
+    const out = new Array(urls.length).fill(null);
     let done = 0;
-    const frames = new Array(urls.length).fill(null);
 
-    async function loadOne(idx) {
-        const url = urls[idx];
+    async function loadOne(i) {
+        const url = urls[i];
         try {
             const r = await fetch(url, {cache: "force-cache"});
             const b = await r.blob();
             const bmp = await createImageBitmap(b, {colorSpaceConversion: "none", premultiplyAlpha: "none"});
-            frames[idx] = bmp;
-        } catch (_) {
-            frames[idx] = null;
+            out[i] = bmp;
+        } catch {
+            out[i] = null;
         } finally {
             done++;
             onProgress?.(done, urls.length);
@@ -362,14 +332,11 @@ async function preloadBitmaps(urls, onProgress, concurrency = 6) {
 
     const q = urls.map((_, i) => i);
     const workers = new Array(Math.min(concurrency, q.length)).fill(0).map(async () => {
-        while (q.length) {
-            await loadOne(q.shift());
-        }
+        while (q.length) await loadOne(q.shift());
     });
     await Promise.all(workers);
 
-    // выкинем пустые, порядок сохраняем
-    return {frames: frames.filter(Boolean)};
+    return {bitmaps: out.filter(Boolean)}; // порядок индексов сохранён
 }
 
 // ---------- Three.js ----------
