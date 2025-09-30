@@ -64,8 +64,7 @@ function card(d) {
     </div>
     <div class="meta">папка: ${escapeHtml(d.id)} • фото: ${d.images}</div>
     ${d.thumb ? `<img src="${d.thumb}" alt="" style="width:100%;height:140px;object-fit:cover;border-radius:.6rem;border:1px solid #1a2029" />` : ""}
-    <div class="row"><button data-open ${d.mode === "empty" ? "disabled" : ""}>Открыть</button></div>
-  `;
+    <div class="row"><button data-open ${d.mode === "empty" ? "disabled" : ""}>Открыть</button></div>`;
     el.querySelector("[data-open]").onclick = () => openViewer(d);
     return el;
 }
@@ -86,17 +85,21 @@ uploadForm?.addEventListener("submit", async (e) => {
         return;
     }
 
-    uploadMsg.textContent = "Загрузка…";
     const btn = uploadForm.querySelector("button[type=submit]");
     btn && (btn.disabled = true);
+    uploadMsg.textContent = "Загрузка…";
 
     const fd = new FormData();
     fd.append("zipfile", zipInput.files[0]);
     if (displayNameInput?.value?.trim()) fd.append("display_name", displayNameInput.value.trim());
     fd.append("password", pwd.value.trim());
 
+    // safety timeout: чтобы не висело бесконечно, даже если сервер завис
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort("timeout"), 180000); // 3 мин
+
     try {
-        const r = await fetch("/api/upload_zip", {method: "POST", body: fd});
+        const r = await fetch("/api/upload_zip", {method: "POST", body: fd, signal: ctrl.signal});
         const raw = await r.text();
         let j = null;
         try {
@@ -109,6 +112,7 @@ uploadForm?.addEventListener("submit", async (e) => {
     } catch (e2) {
         uploadMsg.textContent = `Ошибка: ${e2.message}`;
     } finally {
+        clearTimeout(t);
         btn && (btn.disabled = false);
         zipInput.value = "";
         displayNameInput.value = "";
@@ -143,7 +147,6 @@ btnHome && (btnHome.onclick = () => {
     btnHome.style.display = "none";
 });
 
-// удаление набора
 btnDelete && (btnDelete.onclick = async () => {
     if (!currentDatasetId) return;
     const pw = prompt("Пароль для удаления:");
@@ -163,7 +166,7 @@ btnDelete && (btnDelete.onclick = async () => {
     }
 });
 
-// ---------- Spin (Canvas + ImageBitmap, абсолютное управление, без инерции) ----------
+// ---------- Spin (Canvas + ImageBitmap) ----------
 async function initSpinView(datasetRel) {
     disposeThree();
 
@@ -183,20 +186,23 @@ async function initSpinView(datasetRel) {
     loading.textContent = "Подготовка…";
     resizeSpinCanvas();
 
-    // 1) получаем URL'ы и сортируем ЧИСЛОВО
+    // получаем только webp
     const res = await fetch(`/api/spin/${encodeURIComponent(datasetRel)}?w=1280&max=90`, {cache: "no-store"});
     let urls = await res.json();
+    if (!Array.isArray(urls)) {
+        loading.textContent = "Ошибка: не удалось получить кадры";
+        return;
+    }
+    // numeric sort (подстраховка)
     const num = u => {
         const m = u.match(/(\d+)(?=\.[a-z0-9]+$)/i);
         return m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER;
     };
     urls = urls.slice().sort((a, b) => num(a) - num(b));
 
-    // 2) предзагружаем ВСЕ кадры (порядок сохраняется по индексу)
     const {bitmaps} = await preloadBitmaps(urls, (done, total) => {
         loading.textContent = `Загрузка кадров… (${done}/${total})`;
     }, 6);
-
     if (!bitmaps.length) {
         loading.textContent = "Нет кадров";
         return;
@@ -207,8 +213,7 @@ async function initSpinView(datasetRel) {
     loading.style.display = "none";
     sliderWrap.style.display = "block";
     drawFrame();
-
-    setupSpinControls();   // абсолютное управление
+    setupSpinControls();
 }
 
 function disposeSpin() {
@@ -216,8 +221,8 @@ function disposeSpin() {
     window.removeEventListener("resize", resizeSpinCanvas);
     dragging = false;
     if (canvasSpin) {
-        const ctx = canvasSpin.getContext("2d");
-        ctx && ctx.clearRect(0, 0, canvasSpin.width, canvasSpin.height);
+        const c = canvasSpin.getContext("2d");
+        c && c.clearRect(0, 0, canvasSpin.width, canvasSpin.height);
     }
     frames.forEach(b => b.close?.());
     frames = [];
@@ -258,13 +263,12 @@ function pxPerFrame() {
 function setupSpinControls() {
     slider.max = Math.max(0, frames.length - 1);
     slider.value = 0;
-    slider.oninput = (e) => {
+    slider.oninput = e => {
         frameIndex = parseInt(e.target.value, 10);
         drawFrame();
     };
 
     const wrap = canvasSpin;
-
     const start = x => {
         dragging = true;
         dragStartX = x;
@@ -273,7 +277,7 @@ function setupSpinControls() {
     const move = x => {
         if (!dragging) return;
         const dx = x - dragStartX;
-        const step = Math.trunc(dx / pxPerFrame());      // кадр = функция абсолютного dx
+        const step = Math.trunc(dx / pxPerFrame());
         frameIndex = (dragStartIndex + step) % frames.length;
         if (frameIndex < 0) frameIndex += frames.length;
         slider.value = frameIndex;
@@ -298,7 +302,6 @@ function setupSpinControls() {
     };
     wrap.ontouchend = () => end();
 
-    // колесо — дискретные шаги, без инерции
     wrap.onwheel = e => {
         e.preventDefault();
         const delta = (Math.abs(e.deltaX) > Math.abs(e.deltaY)) ? e.deltaX : -e.deltaY;
@@ -310,7 +313,7 @@ function setupSpinControls() {
     };
 }
 
-// предзагрузка ImageBitmap по индексам (сохранение порядка)
+// предзагрузка ImageBitmap по индексам
 async function preloadBitmaps(urls, onProgress, concurrency = 6) {
     const out = new Array(urls.length).fill(null);
     let done = 0;
@@ -332,11 +335,12 @@ async function preloadBitmaps(urls, onProgress, concurrency = 6) {
 
     const q = urls.map((_, i) => i);
     const workers = new Array(Math.min(concurrency, q.length)).fill(0).map(async () => {
-        while (q.length) await loadOne(q.shift());
+        while (q.length) {
+            await loadOne(q.shift());
+        }
     });
     await Promise.all(workers);
-
-    return {bitmaps: out.filter(Boolean)}; // порядок индексов сохранён
+    return {bitmaps: out.filter(Boolean)};
 }
 
 // ---------- Three.js ----------

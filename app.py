@@ -1,20 +1,39 @@
-# app.py — скан всей data/, загрузка/удаление по паролю, 3D, spin через webp-кэш (строгий порядок + авто-очистка оригиналов)
-import os, re, json, time, shutil, zipfile, threading
+# app.py — стабильный webp-пайплайн, кэш строго на «листе» (без обёрток), список наборов корректный
+import os, re, json, time, shutil, zipfile, threading, logging, tempfile, subprocess
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template, send_from_directory, abort
 from werkzeug.exceptions import RequestEntityTooLarge
 
-# --- необязательная оптимизация изображений (Pillow) ---
+# ---- Pillow / WebP detection ----
 try:
-    from PIL import Image, ImageOps
+    from PIL import Image, ImageOps, ImageFile, features as PIL_features
 
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
     PIL_OK = True
+    WEBP_OK = bool(PIL_features.check("webp"))
     RESAMPLE = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 except Exception:
     PIL_OK = False
+    WEBP_OK = False
     RESAMPLE = None
 
-# ---------- Config ----------
+
+def _which(exe: str) -> str | None:
+    from shutil import which
+    return which(exe)
+
+
+CWEBP = _which("cwebp")
+
+# ---- logging ----
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[logging.FileHandler("flask.log", encoding="utf-8"), logging.StreamHandler()]
+)
+log = logging.getLogger("spin")
+
+# ---- Config ----
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 
@@ -58,33 +77,26 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-# оригиналы, которые можно удалять (webp НЕ трогаем)
 ORIGINAL_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 ALLOWED_MODEL_EXT = {".glb", ".gltf", ".obj", ".ply"}
 MAX_ZIP_MB = 2048
 CLEAN_DELAY_SEC = 300
 
-# ---------- Flask ----------
-app = Flask(
-    __name__,
-    static_folder=str(BASE_DIR / "static"),
-    template_folder=str(BASE_DIR / "templates"),
-)
+# ---- Flask ----
+app = Flask(__name__, static_folder=str(BASE_DIR / "static"), template_folder=str(BASE_DIR / "templates"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_ZIP_MB * 1024 * 1024
 
 
-# Совместимые JSON-ошибки при больших файлах
 @app.errorhandler(RequestEntityTooLarge)
 def handle_413(_e):
     return jsonify({"ok": False, "error": "file too large", "max_mb": MAX_ZIP_MB}), 413
 
 
-# ---------- Utils ----------
+# ---- Utils ----
 def safe_rel_path(rel: str) -> Path:
     rel = (rel or "").strip().replace("\\", "/")
     parts = [p for p in Path(rel).parts if p not in ("", ".", "..")]
-    if not parts:
-        raise ValueError("bad relative path")
+    if not parts: raise ValueError("bad relative path")
     parts[-1] = parts[-1][:128]
     return Path(*parts)
 
@@ -96,12 +108,10 @@ def safe_join_under(base: Path, rel: Path) -> Path:
     return full
 
 
-# натуральная сортировка
 def _nat(s: str):
     return tuple(int(t) if t.isdigit() else t.lower() for t in re.findall(r"\d+|\D+", s))
 
 
-# числовой ключ: родители — натурально, файл — по числу из stem (если есть)
 def _numeric_path_key(relpath: str):
     relpath = relpath.replace("\\", "/")
     parts = relpath.split("/")
@@ -119,8 +129,7 @@ def _numeric_path_key(relpath: str):
 
 
 def _sample_indices(n: int, k: int):
-    if k >= n or k <= 0:
-        return list(range(n))
+    if k >= n or k <= 0: return list(range(n))
     step = (n - 1) / (k - 1)
     raw = [round(i * step) for i in range(k)]
     seen, out = set(), []
@@ -130,11 +139,9 @@ def _sample_indices(n: int, k: int):
             out.append(idx)
     i = 0
     while len(out) < k and i < n:
-        if i not in seen:
-            out.append(i);
-            seen.add(i)
+        if i not in seen: out.append(i); seen.add(i)
         i += 1
-    out.sort()
+    out.sort();
     return out
 
 
@@ -193,11 +200,30 @@ def write_meta(dir_path: Path, display_name: str | None):
     meta.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# ---- «лист» (разворачиваем одиночную обёртку) ----
+def resolve_leaf_rel(dataset_rel: Path) -> Path:
+    """
+    Если в папке нет кадров напрямую и есть ровно одна подпапка, рекурсивно спускаемся.
+    Возвращаем ОТНОСИТЕЛЬНЫЙ путь (от DATA_DIR) к листу.
+    """
+    cur = safe_join_under(DATA_DIR, dataset_rel)
+    rel_cur = dataset_rel
+    while True:
+        if list_images_direct(cur) or detect_model_files_direct(cur):
+            return rel_cur
+        subs = [d for d in cur.iterdir() if d.is_dir()]
+        if len(subs) == 1:
+            cur = subs[0]
+            rel_cur = rel_cur / subs[0].name
+            continue
+        return rel_cur  # либо пусто, либо несколько веток — считаем текущий узлом
+
+
 def list_cached_webp(dataset_rel: Path) -> list[str]:
-    """Список webp-кадров из кэша для датасета (отн. путь внутри CACHE_DIR), в правильном порядке."""
-    cdir = (CACHE_DIR / dataset_rel).resolve()
-    if not str(cdir).startswith(str(CACHE_DIR.resolve())) or not cdir.exists():
-        return []
+    # читаем кэш по ЛИСТУ
+    leaf = resolve_leaf_rel(dataset_rel)
+    cdir = safe_join_under(CACHE_DIR, leaf)
+    if not cdir.exists(): return []
     files = sorted([p for p in cdir.glob("*.webp")], key=lambda p: p.name)
     return [str(p.relative_to(CACHE_DIR)).replace("\\", "/") for p in files]
 
@@ -217,40 +243,35 @@ def find_datasets() -> list[dict]:
         if not has_direct:
             subdirs = [d for d in p.iterdir() if d.is_dir()]
             if len(subdirs) == 1:
-                continue
+                continue  # пропускаем «обёртку»
 
-        imgs_rec = list_images_recursive(p)  # оригиналы (если остались)
+        imgs_rec = list_images_recursive(p)
         model_any = model_direct or detect_model_files(p)
-        rel = str(p.relative_to(DATA_DIR)).replace("\\", "/")
+        rel = Path(p.relative_to(DATA_DIR))
         title = read_meta_title(p, fallback=p.name)
 
-        cached = list_cached_webp(Path(rel))  # webp из кэша
+        cached = list_cached_webp(rel)  # уже по листу
         images_total = len(imgs_rec) if imgs_rec else len(cached)
 
         if imgs_rec or cached or model_any:
-            # превью: оригинал → webp → пусто
             if imgs_rec:
-                thumb = f"/files/{rel}/{imgs_rec[0]}"
+                thumb = f"/files/{rel.as_posix()}/{imgs_rec[0]}"
             elif cached:
                 thumb = f"/spin-cache/{cached[0]}"
             else:
                 thumb = ""
             mode = "model" if model_any else ("spin" if images_total > 0 else "empty")
             items.append({
-                "id": rel,
-                "title": title,
-                "images": images_total,
-                "mode": mode,
+                "id": rel.as_posix(), "title": title, "images": images_total, "mode": mode,
                 "thumb": thumb,
-                "model_url": f"/files/{rel}/{model_any['path'].name}" if model_any else "",
+                "model_url": f"/files/{rel.as_posix()}/{model_any['path'].name}" if model_any else "",
                 "model_type": model_any.get("type", "") if model_any else ""
             })
-
     items.sort(key=lambda d: d["id"].lower())
     return items
 
 
-# ---------- Uploads/originals auto-clean ----------
+# ---- очистки ----
 def _safe_unlink(p: Path):
     try:
         p.unlink(missing_ok=True)
@@ -274,87 +295,117 @@ def sweep_uploads(dir_path: Path, older_than_sec: int = CLEAN_DELAY_SEC):
             pass
 
 
+def delete_originals_recursively(base_dir: Path):
+    if not base_dir.exists(): return
+    for p in base_dir.rglob("*"):
+        if p.is_file() and p.suffix.lower() in ORIGINAL_IMAGE_EXT:
+            _safe_unlink(p)
+
+
+# ---- WebP helpers ----
+def _encode_webp_via_pillow(img: "Image.Image", dst: Path, quality=85):
+    if img.mode not in ("RGB", "RGBA"): img = img.convert("RGB")
+    img.save(dst, "WEBP", quality=quality, method=6)
+
+
+def _encode_webp_via_cwebp(src_path: Path, dst_path: Path, max_w: int, quality=85):
+    if not CWEBP: raise RuntimeError("cwebp not found in PATH")
+    cmd = [CWEBP, str(src_path), "-q", str(quality), "-m", "6", "-mt"]
+    if max_w > 0:
+        cmd.extend(["-resize", str(max_w), "0"])
+    cmd.extend(["-o", str(dst_path)])
+    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def _encode_webp_with_exif_fix(src_path: Path, dst_path: Path, max_w: int, quality=85):
+    if PIL_OK:
+        with Image.open(src_path) as im:
+            im = ImageOps.exif_transpose(im)
+            if max_w and max(im.size) > max_w:
+                im.thumbnail((max_w, max_w * 10), RESAMPLE)
+            if WEBP_OK:
+                _encode_webp_via_pillow(im, dst_path, quality=quality)
+            else:
+                if not CWEBP:
+                    raise RuntimeError("no webp backend")
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp_path = Path(tmp.name)
+                try:
+                    im.save(tmp_path, "PNG", optimize=True)
+                    _encode_webp_via_cwebp(tmp_path, dst_path, 0, quality=quality)
+                finally:
+                    _safe_unlink(tmp_path)
+    else:
+        _encode_webp_via_cwebp(src_path, dst_path, max_w, quality=85)
+
+
+# ---- WebP кэш (СТРОГО на листе) ----
 def ensure_spin_cache(dataset_rel: Path, max_w: int = 1280, max_frames: int = 90) -> list[str]:
-    """
-    Возвращает список ОТНОСИТЕЛЬНЫХ путей к webp-кадрам в CACHE_DIR/<dataset_rel>/####.webp.
-    Порядок строго совпадает с порядком файлов (числовая сортировка).
-    """
-    src_dir = safe_join_under(DATA_DIR, dataset_rel)
-    out_dir = safe_join_under(CACHE_DIR, dataset_rel)
+    leaf = resolve_leaf_rel(dataset_rel)
+    src_dir = safe_join_under(DATA_DIR, leaf)
+    out_dir = safe_join_under(CACHE_DIR, leaf)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     existing = sorted([p for p in out_dir.glob("*.webp")], key=lambda p: p.name)
     if existing:
         return [str(p.relative_to(CACHE_DIR)).replace("\\", "/") for p in existing]
 
-    src_files_rel = list_images_recursive(src_dir)
-    if not src_files_rel:
-        return []
+    # берём кадры ТОЛЬКО из текущей папки-листа (без рекурсии), иначе будет конфликт и «двойные уровни»
+    src_files = list_images_direct(src_dir)
+    src_files = [f for f in src_files if Path(f).suffix.lower() != ".webp"]
+    src_files.sort(key=_numeric_path_key)
+    if not src_files:
+        # на листе нет кадров — пробуем рекурсивно (мульти-лист), но пишем кэш под КАЖДЫЙ подлист отдельно
+        subdirs = [d for d in src_dir.iterdir() if d.is_dir()]
+        all_written = []
+        for sd in subdirs:
+            sub_rel = (leaf / sd.name)
+            all_written += ensure_spin_cache(sub_rel, max_w=max_w, max_frames=max_frames)
+        return all_written
 
-    if max_frames and len(src_files_rel) > max_frames:
-        idxs = _sample_indices(len(src_files_rel), max_frames)
-        src_files_rel = [src_files_rel[i] for i in idxs]
+    if max_frames and len(src_files) > max_frames:
+        idxs = _sample_indices(len(src_files), max_frames)
+        src_files = [src_files[i] for i in idxs]
 
-    if not PIL_OK:
-        return [str((src_dir / rp).relative_to(DATA_DIR)).replace("\\", "/") for rp in src_files_rel]
-
-    for i, rp in enumerate(src_files_rel):
-        src = src_dir / rp
+    ok_cnt = 0
+    for i, name in enumerate(src_files):
+        src = src_dir / name
         dst = out_dir / f"{i:04d}.webp"
         dst.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with Image.open(src) as im:
-                im = ImageOps.exif_transpose(im)
-                im.thumbnail((max_w, max_w * 10), RESAMPLE)
-                im.save(dst, "WEBP", quality=85, method=6)
-        except Exception:
-            continue
+            _encode_webp_with_exif_fix(src, dst, max_w, quality=85)
+            ok_cnt += 1
+        except Exception as e:
+            log.error("webp encode failed for %s -> %s", src, e)
+            _safe_unlink(dst)
 
     result = sorted([p for p in out_dir.glob("*.webp")], key=lambda p: p.name)
     return [str(p.relative_to(CACHE_DIR)).replace("\\", "/") for p in result]
 
 
+# ---- периодическая чистка оригиналов (после успешного кэша) ----
 def sweep_originals(data_dir: Path, older_than_sec: int = CLEAN_DELAY_SEC):
-    """
-    Для всех датасетов:
-    - гарантируем webp-кэш (ensure_spin_cache)
-    - удаляем оригиналы (jpg/png/tif/bmp) старше older_than_sec
-    """
     now = time.time()
-
     for root, dirs, files in os.walk(data_dir):
         p = Path(root)
         if p == data_dir:
             for skip in ("_uploads", "_cache"):
                 if skip in dirs: dirs.remove(skip)
             continue
-
         try:
-            dataset_rel = p.relative_to(data_dir)
+            rel = p.relative_to(data_dir)
         except Exception:
             continue
-
-        originals = [f for f in p.iterdir()
-                     if f.is_file() and f.suffix.lower() in ORIGINAL_IMAGE_EXT]
-
-        if originals:
-            try:
-                ensure_spin_cache(dataset_rel)
-            except Exception:
-                # если кэш не построился — оригиналы не трогаем
-                continue
-
-        for f in originals:
-            try:
-                if now - f.stat().st_mtime > older_than_sec:
-                    f.unlink(missing_ok=True)
-            except FileNotFoundError:
-                pass
+        if list_cached_webp(rel):
+            for f in p.iterdir():
+                try:
+                    if f.is_file() and f.suffix.lower() in ORIGINAL_IMAGE_EXT and now - f.stat().st_mtime > older_than_sec:
+                        f.unlink(missing_ok=True)
+                except FileNotFoundError:
+                    pass
 
 
 def _start_background_sweeper():
-    """Каждую минуту: чистим _uploads и оригиналы (оставляя webp-кэш)."""
-
     def _loop():
         while True:
             try:
@@ -364,81 +415,42 @@ def _start_background_sweeper():
                 pass
             time.sleep(60)
 
-    t = threading.Thread(target=_loop, daemon=True)
-    t.start()
+    threading.Thread(target=_loop, daemon=True).start()
 
 
-# ---------- Routes ----------
-@app.route("/")
-def index():
-    return render_template("index.html")
+# ---- наборы-листья под базовой папкой ----
+def _leafs_under(base_abs: Path) -> list[Path]:
+    # собираем все потенциальные узлы и нормализуем к листам
+    acc = set()
+    for root, dirs, files in os.walk(base_abs):
+        p = Path(root)
+        if p == DATA_DIR: continue
+        try:
+            rel = p.relative_to(DATA_DIR)
+        except Exception:
+            continue
+        acc.add(resolve_leaf_rel(rel))
+    # оставляем уникальные
+    uniq = []
+    seen = set()
+    for r in acc:
+        s = r.as_posix()
+        if s not in seen:
+            uniq.append(r);
+            seen.add(s)
+    # короткие пути раньше (чисто косметика)
+    uniq.sort(key=lambda r: (len(r.parts), r.as_posix()))
+    return uniq
 
 
-@app.route("/files/<path:subpath>")
-def serve_from_data(subpath):
-    try:
-        rel = safe_rel_path(subpath)
-        full = safe_join_under(DATA_DIR, rel)
-    except Exception:
-        abort(404)
-    if not full.exists() or not full.is_file():
-        abort(404)
-    return send_from_directory(full.parent, full.name)
-
-
-@app.route("/spin-cache/<path:subpath>")
-def serve_from_cache(subpath):
-    try:
-        rel = safe_rel_path(subpath)
-        full = safe_join_under(CACHE_DIR, rel)
-    except Exception:
-        abort(404)
-    if not full.exists() or not full.is_file():
-        abort(404)
-    return send_from_directory(full.parent, full.name)
-
-
-@app.route("/api/datasets")
-def api_datasets():
-    return jsonify(find_datasets())
-
-
-@app.route("/api/images/<path:dataset_rel>")
-def api_images(dataset_rel):
-    rel = safe_rel_path(dataset_rel)
-    base = safe_join_under(DATA_DIR, rel)
-    files = list_images_recursive(base)
-    return jsonify([f"/files/{rel}/{rp}".replace("\\", "/") for rp in files])
-
-
-def _numeric_from_url(u: str) -> tuple:
-    name = Path(u).name
-    stem = Path(name).stem
-    if stem.isdigit(): return (0, int(stem), name.lower())
-    m = re.search(r"\d+", stem)
-    return (0, int(m.group(0)), name.lower()) if m else (1, name.lower())
-
-
-@app.route("/api/spin/<path:dataset_rel>")
-def api_spin(dataset_rel):
-    rel = safe_rel_path(dataset_rel)
-    max_w = int(request.args.get("w", "1280"))
-    max_frames = int(request.args.get("max", "90"))
-    rels = ensure_spin_cache(rel, max_w=max_w, max_frames=max_frames)
-    urls = []
-    for rp in rels:
-        urls.append(f"/spin-cache/{rp}" if rp.lower().endswith(".webp") else f"/files/{rp}")
-    urls.sort(key=_numeric_from_url)  # страховка: числовая сортировка
-    return jsonify(urls)
-
-
+# ---- Upload ZIP ----
 @app.route("/api/upload_zip", methods=["POST"])
 def api_upload_zip():
-    # ВСЕГДА JSON-ответы
     if request.form.get("password", "") != UPLOAD_PASSWORD:
         return jsonify({"ok": False, "error": "unauthorized"}), 401
     if "zipfile" not in request.files:
         return jsonify({"ok": False, "error": "no file"}), 400
+
     file = request.files["zipfile"]
     if not file.filename.lower().endswith(".zip"):
         return jsonify({"ok": False, "error": "only .zip allowed"}), 400
@@ -457,13 +469,12 @@ def api_upload_zip():
     try:
         file.save(str(up_path))
     except RequestEntityTooLarge:
-        # перехватывается глобальным handler'ом, но на всякий
         return jsonify({"ok": False, "error": "file too large", "max_mb": MAX_ZIP_MB}), 413
 
-    schedule_delete(up_path, CLEAN_DELAY_SEC)
-
     target_dir.mkdir(parents=True, exist_ok=True)
+
     try:
+        # 1) распаковка
         with zipfile.ZipFile(str(up_path), "r") as zf:
             for m in zf.infolist():
                 if m.is_dir(): continue
@@ -472,23 +483,123 @@ def api_upload_zip():
                 rel_path = Path(*parts)
                 ext = rel_path.suffix.lower()
                 if ext in (ALLOWED_IMAGE_EXT | ALLOWED_MODEL_EXT):
-                    out = safe_join_under(target_dir, rel_path)
+                    out = safe_join_under(DATA_DIR, dataset_rel / rel_path)
                     out.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(m) as src, open(out, "wb") as dst:
                         shutil.copyfileobj(src, dst)
+
         write_meta(target_dir, display_name)
-        # сбросим кэш спина, чтобы пересобрался из новых кадров
+
+        # 2) чистим старый кэш под веткой
         try:
-            shutil.rmtree(safe_join_under(CACHE_DIR, dataset_rel))
+            cache_sub = safe_join_under(CACHE_DIR, dataset_rel)
+            if cache_sub.exists(): shutil.rmtree(cache_sub)
         except Exception:
             pass
-        rel_str = str(dataset_rel).replace("\\", "/")
-        return jsonify(
-            {"ok": True, "dataset_id": rel_str, "display_name": read_meta_title(target_dir, target_dir.name)})
+
+        # 3) строим webp для каждого ЛИСТА
+        spin_max_w = int(CFG.get("spin_max_w", 1280))
+        spin_max_frames = int(CFG.get("spin_max_frames", 90))
+
+        leafs = _leafs_under(target_dir)
+        if not leafs:
+            leafs = [resolve_leaf_rel(dataset_rel)]
+
+        built_for = []
+        for rel in leafs:
+            urls_rel = ensure_spin_cache(rel, max_w=spin_max_w, max_frames=spin_max_frames)
+            if urls_rel:
+                built_for.append(rel.as_posix())
+                # удаляем оригиналы только в этом листе
+                delete_originals_recursively(safe_join_under(DATA_DIR, rel))
+
+        _safe_unlink(up_path)  # zip удаляем после распаковки
+
+        return jsonify({
+            "ok": True,
+            "dataset_id": dataset_rel.as_posix(),
+            "display_name": read_meta_title(target_dir, target_dir.name),
+            "optimized": bool(built_for),
+            "built_for": built_for
+        })
+
     except zipfile.BadZipFile:
+        _safe_unlink(up_path)
         return jsonify({"ok": False, "error": "bad zip"}), 400
     except Exception as e:
+        _safe_unlink(up_path)
+        log.exception("upload failed: %s", e)
         return jsonify({"ok": False, "error": f"upload failed: {e}"}), 500
+
+
+# ---- API просмотра ----
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/files/<path:subpath>")
+def serve_from_data(subpath):
+    try:
+        rel = safe_rel_path(subpath)
+        full = safe_join_under(DATA_DIR, rel)
+    except Exception:
+        abort(404)
+    if not full.exists() or not full.is_file(): abort(404)
+    return send_from_directory(full.parent, full.name)
+
+
+@app.route("/spin-cache/<path:subpath>")
+def serve_from_cache(subpath):
+    try:
+        rel = safe_rel_path(subpath)
+        full = safe_join_under(CACHE_DIR, rel)
+    except Exception:
+        abort(404)
+    if not full.exists() or not full.is_file(): abort(404)
+    return send_from_directory(full.parent, full.name)
+
+
+@app.route("/api/datasets")
+def api_datasets():
+    return jsonify(find_datasets())
+
+
+def _numeric_from_url(u: str) -> tuple:
+    name = Path(u).name
+    stem = Path(name).stem
+    if stem.isdigit(): return (0, int(stem), name.lower())
+    m = re.search(r"\d+", stem)
+    return (0, int(m.group(0)), name.lower()) if m else (1, name.lower())
+
+
+@app.route("/api/spin/<path:dataset_rel>")
+def api_spin(dataset_rel):
+    rel = safe_rel_path(dataset_rel)
+    leaf = resolve_leaf_rel(rel)
+    max_w = int(request.args.get("w", CFG.get("spin_max_w", 1280)))
+    max_frames = int(request.args.get("max", CFG.get("spin_max_frames", 90)))
+
+    urls_rel = list_cached_webp(leaf)
+    if not urls_rel:
+        urls_rel = ensure_spin_cache(leaf, max_w=max_w, max_frames=max_frames)
+
+    if urls_rel:
+        urls = [f"/spin-cache/{rp}" for rp in urls_rel]
+        urls.sort(key=_numeric_from_url)
+        return jsonify(urls)
+
+    # fallback — оригиналы ровно в ЛИСТЕ
+    base = safe_join_under(DATA_DIR, leaf)
+    originals = list_images_direct(base)
+    originals = [f for f in originals if Path(f).suffix.lower() != ".webp"]
+    if originals:
+        originals.sort(key=_numeric_path_key)
+        urls = [f"/files/{leaf.as_posix()}/{name}" for name in originals]
+        urls.sort(key=_numeric_from_url)
+        return jsonify(urls)
+
+    return jsonify({"ok": False, "error": "no frames found"}), 404
 
 
 @app.route("/api/delete_dataset", methods=["POST"])
@@ -512,13 +623,19 @@ def api_delete_dataset():
         return jsonify({"ok": False, "error": str(e)}), 400
 
 
-# ---------- Entrypoint ----------
-# разово при старте
+# ---- Entrypoint ----
 try:
-    sweep_uploads(UPLOADS_DIR, CLEAN_DELAY_SEC)
+    # удалить старые загруженные zip
+    now = time.time()
+    for p in UPLOADS_DIR.glob("*.zip"):
+        try:
+            if now - p.stat().st_mtime > CLEAN_DELAY_SEC:
+                _safe_unlink(p)
+        except FileNotFoundError:
+            pass
 except Exception:
     pass
-# периодически
+
 _start_background_sweeper()
 
 if __name__ == "__main__":
