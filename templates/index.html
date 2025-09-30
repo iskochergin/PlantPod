@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Photo / 3D Viewer</title>
+    <link rel="stylesheet" href="/static/styles.css"/>
+    <!-- three.js + loaders -->
+    <script src="https://unpkg.com/three@0.160.0/build/three.min.js" defer></script>
+    <script src="https://unpkg.com/three@0.160.0/examples/js/controls/OrbitControls.js" defer></script>
+    <script src="https://unpkg.com/three@0.160.0/examples/js/loaders/PLYLoader.js" defer></script>
+    <script src="https://unpkg.com/three@0.160.0/examples/js/loaders/GLTFLoader.js" defer></script>
+    <script src="https://unpkg.com/three@0.160.0/examples/js/loaders/OBJLoader.js" defer></script>
+    <script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="topbar">
+    <button id="btnHome" class="ghost" style="display:none">←</button>
+    <h1>PlantPod dataset / 🧊 3D</h1>
+    <div class="spacer"></div>
+</header>
+
+<main id="pageList">
+    <section class="upload">
+        <h2>Добавить zip</h2>
+        <form id="uploadForm">
+            <input type="file" id="zipInput" accept=".zip"/>
+<!--            <input type="text" id="displayName" placeholder="название (опционально)"/>-->
+            <input type="password" id="pwd" placeholder="пароль"/>
+            <button type="submit">Загрузить</button>
+        </form>
+        <p class="hint">Zip может содержать фото и/или модель (<code>.glb, .gltf, .obj, .ply</code>). Загрузка только по
+            паролю.</p>
+        <div id="uploadMsg" class="msg"></div>
+    </section>
+
+    <section>
+        <h2>Наборы</h2>
+        <div id="datasets" class="grid"></div>
+        <div id="listError" class="err" style="display:none"></div>
+    </section>
+</main>
+
+<main id="pageViewer" style="display:none">
+    <div class="viewer-toolbar">
+        <span id="viewerTitle"></span>
+        <span id="viewerMode" class="badge"></span>
+        <div class="spacer"></div>
+        <button id="btnDelete" class="danger">Удалить набор</button>
+    </div>
+    <div id="viewerWrap">
+        <canvas id="glcanvas"></canvas>
+        <img id="spinImg" style="display:none; max-width:100%; max-height:100%; object-fit:contain;"/>
+        <div id="loading" class="loading" style="display:none">Загрузка…</div>
+        <div id="spinSliderWrap" class="spin-slider" style="display:none;">
+            <input type="range" id="spinSlider" min="0" max="1" value="0"/>
+        </div>
+    </div>
+</main>
+</body>
+</html>

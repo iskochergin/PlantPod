@@ -1,0 +1,6 @@
+config.json
+.DS_Store
+
+.idea/
+
+data/
