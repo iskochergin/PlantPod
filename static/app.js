@@ -33,6 +33,19 @@ let frameIndex = 0;
 // абсолютное управление
 let dragStartX = 0, dragStartIndex = 0, dragging = false;
 
+// --- zoom/pan state ---
+let zoom = 1;
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 6; // ограничим, чтобы не «улетало»
+let panX = 0, panY = 0;
+let isPanning = false;
+let panStart = {x: 0, y: 0};
+let panStartOffset = {x: 0, y: 0};
+let spaceDown = false;
+// touch pinch helpers
+let lastPinchDist = null;
+let pinchCenter = null;
+
 document.addEventListener("DOMContentLoaded", () => fetchDatasets());
 
 // ---------- Datasets ----------
@@ -210,6 +223,14 @@ async function initSpinView(datasetRel) {
 
     frames = bitmaps;
     frameIndex = 0;
+
+    // сброс zoom/pan при новом наборе
+    zoom = 1;
+    panX = 0;
+    panY = 0;
+    lastPinchDist = null;
+    pinchCenter = null;
+
     loading.style.display = "none";
     sliderWrap.style.display = "block";
     drawFrame();
@@ -220,6 +241,13 @@ function disposeSpin() {
     cancelAnimationFrame(raf);
     window.removeEventListener("resize", resizeSpinCanvas);
     dragging = false;
+    // сброс zoom/pan
+    zoom = 1;
+    panX = 0;
+    panY = 0;
+    lastPinchDist = null;
+    pinchCenter = null;
+
     if (canvasSpin) {
         const c = canvasSpin.getContext("2d");
         c && c.clearRect(0, 0, canvasSpin.width, canvasSpin.height);
@@ -241,23 +269,101 @@ function resizeSpinCanvas() {
 
 window.addEventListener("resize", resizeSpinCanvas);
 
+// --- РЕНДЕР С УЧЁТОМ ЗУМА/ПАНОРАМЫ + КЛАМПИНГ ---
 function drawFrame() {
     if (!ctxSpin || !frames.length) return;
     const bmp = frames[((frameIndex % frames.length) + frames.length) % frames.length];
     const cw = canvasSpin.width, ch = canvasSpin.height;
-    const r = Math.min(cw / bmp.width, ch / bmp.height);
-    const w = Math.round(bmp.width * r), h = Math.round(bmp.height * r);
-    const x = (cw - w) >> 1, y = (ch - h) >> 1;
+
+    // базовый fit-contain коэффициент
+    const base = Math.min(cw / bmp.width, ch / bmp.height) || 1;
+    const scale = base * zoom;
+
+    const w = Math.max(1, Math.round(bmp.width * scale));
+    const h = Math.max(1, Math.round(bmp.height * scale));
+
+    // кламп панорамирования, чтобы кадр не «улетал» за край
+    clampPan(bmp, cw, ch, scale);
+
+    const x = ((cw - w) >> 1) + Math.round(panX);
+    const y = ((ch - h) >> 1) + Math.round(panY);
+
     ctxSpin.imageSmoothingEnabled = true;
     ctxSpin.imageSmoothingQuality = "high";
     ctxSpin.clearRect(0, 0, cw, ch);
     ctxSpin.drawImage(bmp, x, y, w, h);
 }
 
+function clampPan(bmp, cw, ch, scale) {
+    const w = bmp.width * scale;
+    const h = bmp.height * scale;
+
+    const allowX = Math.max(0, (w - cw) / 2);
+    const allowY = Math.max(0, (h - ch) / 2);
+
+    if (w <= cw) panX = 0; else panX = Math.min(allowX, Math.max(-allowX, panX));
+    if (h <= ch) panY = 0; else panY = Math.min(allowY, Math.max(-allowY, panY));
+}
+
 function pxPerFrame() {
     const w = canvasSpin?.clientWidth || 320;
     const n = Math.max(1, frames.length || 60);
     return Math.max(3, Math.round(w / n));
+}
+
+// --- helpers для зума/панорамирования ---
+function clamp(val, a, b) {
+    return Math.max(a, Math.min(b, val));
+}
+
+function setZoom(nextZoom, cx, cy) {
+    const prev = zoom;
+    zoom = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM);
+    if (!canvasSpin || !frames.length) return;
+
+    // зум вокруг точки (cx, cy): сохраняем под курсором ту же точку
+    const cw = canvasSpin.width, ch = canvasSpin.height;
+    const bmp = frames[0];
+
+    const base = Math.min(cw / bmp.width, ch / bmp.height) || 1;
+    const prevW = bmp.width * base * prev;
+    const prevH = bmp.height * base * prev;
+    const nextW = bmp.width * base * zoom;
+    const nextH = bmp.height * base * zoom;
+
+    const leftPrev = ((cw - prevW) / 2) + panX;
+    const topPrev = ((ch - prevH) / 2) + panY;
+
+    const x = cx ?? cw / 2;
+    const y = cy ?? ch / 2;
+
+    const relX = prevW ? (x - leftPrev) / prevW : 0.5;
+    const relY = prevH ? (y - topPrev) / prevH : 0.5;
+
+    const leftNext = x - relX * nextW;
+    const topNext = y - relY * nextH;
+
+    panX += Math.round(leftNext - ((cw - nextW) / 2));
+    panY += Math.round(topNext - ((ch - nextH) / 2));
+}
+
+function startPan(clientX, clientY) {
+    isPanning = true;
+    panStart.x = clientX;
+    panStart.y = clientY;
+    panStartOffset.x = panX;
+    panStartOffset.y = panY;
+}
+
+function movePan(clientX, clientY) {
+    if (!isPanning) return;
+    panX = panStartOffset.x + (clientX - panStart.x);
+    panY = panStartOffset.y + (clientY - panStart.y);
+    drawFrame();
+}
+
+function endPan() {
+    isPanning = false;
 }
 
 function setupSpinControls() {
@@ -287,22 +393,96 @@ function setupSpinControls() {
         dragging = false;
     };
 
-    wrap.onmousedown = e => start(e.clientX);
-    window.onmousemove = e => move(e.clientX);
-    window.onmouseup = () => end();
+    // мышь: ЛКМ — листать кадры; ПКМ/СКМ или Space+ЛКМ — панорамирование
+    wrap.onmousedown = e => {
+        if (e.button === 1 || e.button === 2 || (spaceDown && e.button === 0)) {
+            e.preventDefault();
+            startPan(e.clientX, e.clientY);
+            return;
+        }
+        start(e.clientX);
+    };
+    window.onmousemove = e => {
+        if (isPanning) {
+            movePan(e.clientX, e.clientY);
+            return;
+        }
+        move(e.clientX);
+    };
+    window.onmouseup = () => {
+        endPan();
+        end();
+    };
+    wrap.oncontextmenu = e => e.preventDefault();
 
+    // двойной клик — сброс зума/пана
+    wrap.ondblclick = () => {
+        zoom = 1;
+        panX = 0;
+        panY = 0;
+        drawFrame();
+    };
+
+    // touch: 1 палец — листать кадры; 2 пальца — pinch + пан
     wrap.ontouchstart = e => {
+        if (e.touches.length === 2) {
+            e.preventDefault();
+            const [t1, t2] = e.touches;
+            lastPinchDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+            const rect = canvasSpin.getBoundingClientRect();
+            pinchCenter = {
+                x: (t1.clientX + t2.clientX) / 2 - rect.left,
+                y: (t1.clientY + t2.clientY) / 2 - rect.top
+            };
+            startPan((t1.clientX + t2.clientX) / 2, (t1.clientY + t2.clientY) / 2);
+            return;
+        }
         const t = e.touches[0];
         start(t.clientX);
     };
     wrap.ontouchmove = e => {
-        e.preventDefault();
+        if (e.touches.length === 2) {
+            e.preventDefault();
+            const [t1, t2] = e.touches;
+
+            const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+            const raw = dist / (lastPinchDist || dist);
+
+            // смягчаем чувствительность (0.35) + ограничим шаг (±6% за тик)
+            const softened = Math.pow(raw, 1);
+            const factor = Math.min(1.5, Math.max(0.94, softened));
+            setZoom(zoom * factor, pinchCenter.x, pinchCenter.y);
+            lastPinchDist = dist;
+
+            movePan((t1.clientX + t2.clientX) / 2, (t1.clientY + t2.clientY) / 2);
+            drawFrame();
+            return;
+        }
         const t = e.touches[0];
+        e.preventDefault();
         move(t.clientX);
     };
-    wrap.ontouchend = () => end();
+    wrap.ontouchend = () => {
+        lastPinchDist = null;
+        pinchCenter = null;
+        endPan();
+        end();
+    };
 
+    // колесо: Ctrl+wheel — зум вокруг курсора; иначе — листать кадры
     wrap.onwheel = e => {
+        if (e.ctrlKey) {
+            e.preventDefault();
+            const rect = canvasSpin.getBoundingClientRect();
+            const cx = e.clientX - rect.left;
+            const cy = e.clientY - rect.top;
+            // ещё мягче: экспонента + жёсткий лимит шага
+            const factorRaw = Math.exp(-e.deltaY / 700);
+            const factor = Math.min(1.06, Math.max(0.94, factorRaw));
+            setZoom(zoom * factor, cx, cy);
+            drawFrame();
+            return;
+        }
         e.preventDefault();
         const delta = (Math.abs(e.deltaX) > Math.abs(e.deltaY)) ? e.deltaX : -e.deltaY;
         const steps = Math.sign(delta) * Math.max(1, Math.round(Math.abs(delta) / 35));
@@ -312,6 +492,14 @@ function setupSpinControls() {
         drawFrame();
     };
 }
+
+// клавиша Space для панорамирования ЛКМ
+window.addEventListener("keydown", e => {
+    if (e.code === "Space") spaceDown = true;
+});
+window.addEventListener("keyup", e => {
+    if (e.code === "Space") spaceDown = false;
+});
 
 // предзагрузка ImageBitmap по индексам
 async function preloadBitmaps(urls, onProgress, concurrency = 6) {
