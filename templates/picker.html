@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>Plant Picker</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <style>
+        .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .5rem;
+            align-items: center;
+            margin-bottom: .75rem
+        }
+
+        .toolbar input, .toolbar select {
+            background: #0e141b;
+            color: #cbd5e1;
+            border: 1px solid #1a2029;
+            border-radius: .5rem;
+            padding: .45rem .6rem
+        }
+
+        .toolbar button {
+            padding: .45rem .7rem
+        }
+
+        #grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: .75rem
+        }
+
+        .card.pick {
+            border: 1px solid #2f855a;
+            box-shadow: 0 0 0 1px #1c3f2f inset
+        }
+
+        .card.skip {
+            opacity: .55
+        }
+
+        .thumb {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+            border-radius: .6rem;
+            border: 1px solid #1a2029
+        }
+
+        .row2 {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: .5rem;
+            margin-top: .35rem
+        }
+
+        .muted {
+            color: #7a8a99;
+            font-size: .85rem
+        }
+
+        .pill {
+            font-size: .75rem;
+            border: 1px solid #22303a;
+            border-radius: 999px;
+            padding: .15rem .45rem;
+        }
+
+        .badge.yes {
+            background: #11301f;
+            border-color: #184d31;
+            color: #7de0a6
+        }
+
+        .pager {
+            display: flex;
+            gap: .5rem;
+            align-items: center;
+            justify-content: flex-end;
+            margin: .75rem 0
+        }
+
+        .hint {
+            background: #171f29;
+            border: 1px dashed #2b3b4d;
+            padding: .5rem .75rem;
+            border-radius: .6rem;
+            margin: .5rem 0
+        }
+
+        .kpi {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            flex-wrap: wrap
+        }
+
+        .kpi span {
+            padding: .25rem .5rem;
+            background: #0f1720;
+            border: 1px solid #22303a;
+            border-radius: .4rem;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2 style="margin:.2rem 0 .6rem 0">Plant Picker</h2>
+
+    <div class="toolbar">
+        <input id="taxonInput" placeholder="taxon_id или латинское имя (например, Plantago major)" size="34">
+        <input id="placeInput" placeholder="place_id (опц.)" size="10">
+        <input id="targetInput" value="200" size="5" title="целевое число фото">
+        <select id="licSelect" title="фильтр лицензий">
+            <option value="cc0,cc-by,cc-by-nc">cc0, cc-by, cc-by-nc</option>
+            <option value="cc0">cc0</option>
+            <option value="cc0,cc-by">cc0, cc-by</option>
+            <option value="cc0,cc-by,cc-by-sa,cc-by-nd,cc-by-nc,cc-by-nc-sa,cc-by-nc-nd">все CC</option>
+        </select>
+        <select id="sortSelect" title="сортировка">
+            <option value="faves">faves</option>
+            <option value="observed_on">observed_on</option>
+        </select>
+        <button id="btnLoad">Load</button>
+        <div class="kpi">
+            <span id="namesBox">EN/RU: —</span>
+            <span>Picked <b id="pickedCount">0</b> / Target <b id="targetCount">200</b></span>
+            <span>Total <b id="totalCount">0</b></span>
+        </div>
+    </div>
+
+    <div id="smallHint" class="hint" style="display:none"></div>
+
+    <div class="pager">
+        <button id="btnPrev" disabled>◀ Prev</button>
+        <span class="muted">Page <b id="uiPage">1</b></span>
+        <button id="btnNext" disabled>Next ▶</button>
+    </div>
+
+    <div id="grid"></div>
+
+    <div class="pager">
+        <div class="row" style="gap:.5rem">
+            <button id="btnCopy">Copy URLs</button>
+            <button id="btnCSV">Export CSV</button>
+            <button id="btnJSONL">Export JSONL</button>
+        </div>
+        <div style="flex:1"></div>
+        <button id="btnPrev2" disabled>◀ Prev</button>
+        <span class="muted">Page <b id="uiPage2">1</b></span>
+        <button id="btnNext2" disabled>Next ▶</button>
+    </div>
+</div>
+
+<script src="/static/picker.js"></script>
+</body>
+</html>
