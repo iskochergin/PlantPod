@@ -10,3 +10,4 @@ test.py
 *.log
 
 dataset_collect/
+__pychache__/

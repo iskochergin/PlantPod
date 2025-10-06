@@ -5,6 +5,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
+import glob
 
 import requests
 from PIL import Image, ImageOps  # <-- Pillow
@@ -72,6 +73,13 @@ def inat_taxon_by_query(q: str) -> Optional[dict]:
     js = http_json(INAT_TAXA_API, params={"q": q, "rank": "species", "per_page": 1}, timeout=30)
     res = js.get("results", [])
     return res[0] if res else None
+
+
+def _resolve_species_dir(taxon_id: int) -> Optional[Path]:
+    # dataset_collect/<taxon_id>__<latin_slug>/
+    pat = str(DATASET_OUT_DIR / f"{taxon_id}__*")
+    hits = sorted(glob.glob(pat))
+    return Path(hits[0]) if hits else None
 
 
 def best_photo_urls(ph: dict) -> Tuple[str, str, Optional[int], Optional[int]]:
@@ -271,6 +279,41 @@ def write_selected_csv(csv_path: Path, rows: List[Dict[str, str]]):
         wr.writeheader()
         for r in rows:
             wr.writerow(r)
+
+
+@picker_api_bp.get("/collect/selected")
+def api_collect_selected():
+    taxon_id = request.args.get("taxon_id", type=int)
+    if not taxon_id:
+        return jsonify({"ok": False, "error": "taxon_id required"}), 400
+
+    root = _resolve_species_dir(taxon_id)
+    if not root:
+        return jsonify({"ok": True, "items": []})
+
+    csv_path = root / "selected.csv"
+    if not csv_path.exists():
+        return jsonify({"ok": True, "items": []})
+
+    rows = []
+    with csv_path.open("r", newline="", encoding="utf-8") as f:
+        rd = csv.DictReader(f)
+        for r in rd:
+            rows.append({
+                "photo_id": r.get("photo_id") or "",
+                "observation_id": r.get("observation_id") or "",
+                "best_url": r.get("best_url") or "",
+                "width": r.get("width") or "",
+                "height": r.get("height") or "",
+                "license": r.get("license") or "",
+                "attribution": r.get("attribution") or "",
+                "observed_on": r.get("observed_on") or "",
+                "time_observed_at": r.get("time_observed_at") or "",
+                "user_login": r.get("user_login") or "",
+                "place_guess": r.get("place_guess") or "",
+                "quality_grade": r.get("quality_grade") or "",
+            })
+    return jsonify({"ok": True, "items": rows})
 
 
 # -------------------- API: sync picked (добавляет/удаляет, конвертирует в WEBP) --------------------

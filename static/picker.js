@@ -178,6 +178,33 @@
         return card;
     }
 
+    async function fetchExistingSelected() {
+        if (!state.inat_taxon_id) return;
+        const r = await fetch(`/api/collect/selected?taxon_id=${state.inat_taxon_id}`);
+        const js = await r.json();
+        if (!js.ok) return;
+        state.picked.clear();
+        (js.items || []).forEach(it => {
+            const pid = String(it.photo_id || "");
+            if (!pid) return;
+            // нормализуем под текущую структуру
+            state.picked.set(pid, {
+                photo_id: pid,
+                observation_id: String(it.observation_id || ""),
+                best_url: String(it.best_url || ""),
+                width: it.width || "",
+                height: it.height || "",
+                license: String(it.license || ""),
+                attribution: String(it.attribution || ""),
+                observed_on: String(it.observed_on || ""),
+                time_observed_at: String(it.time_observed_at || ""),
+                user_login: String(it.user_login || ""),
+                place_guess: String(it.place_guess || ""),
+                quality_grade: String(it.quality_grade || "")
+            });
+        });
+    }
+
     function renderItems(items) {
         grid.innerHTML = "";
         for (const it of items) {
@@ -308,6 +335,7 @@
             state.queue = [];
             state.inflight = false;
             await resolveTaxon(taxonInput.value.trim());
+            await fetchExistingSelected();
             state.per_page = 10;
             await showPage(1);
             updateBadges();
