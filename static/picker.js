@@ -1,460 +1,346 @@
-const $ = s => document.querySelector(s);
+// Plant Picker — очередь синхронизаций + индикатор Queue:N
+(() => {
+    const $ = (id) => document.getElementById(id);
 
-// UI
-const taxonInput = $("#taxonInput");
-const placeInput = $("#placeInput");
-const targetInput = $("#targetInput");
-const licSelect = $("#licSelect");
-const sortSelect = $("#sortSelect");
-const btnLoad = $("#btnLoad");
-const namesBox = $("#namesBox");
-const totalCount = $("#totalCount");
-const pickedCount = $("#pickedCount");
-const targetCount = $("#targetCount");
-const hint = $("#smallHint");
-const grid = $("#grid");
-const btnPrev = $("#btnPrev"), btnNext = $("#btnNext");
-const btnPrev2 = $("#btnPrev2"), btnNext2 = $("#btnNext2");
-const uiPage = $("#uiPage"), uiPage2 = $("#uiPage2");
-const btnCopy = $("#btnCopy"), btnCSV = $("#btnCSV"), btnJSONL = $("#btnJSONL");
+    // DOM
+    const taxonInput = $("taxonInput");
+    const targetInput = $("targetInput");
+    const btnLoad = $("btnLoad");
 
-const PAGE_SIZE = 10;
+    const btnPrevTop = $("btnPrevTop");
+    const btnNextTop = $("btnNextTop");
+    const pageTop = $("pageTop");
+    const btnPrevBottom = $("btnPrevBottom");
+    const btnNextBottom = $("btnNextBottom");
+    const pageBottom = $("pageBottom");
 
-const state = {
-    // фильтры
-    taxonId: null,
-    taxonLatin: "",
-    placeId: "",
-    target: 200,
-    license: "cc0,cc-by,cc-by-nc",
-    sort: "faves",
+    const grid = $("grid");
+    const pickedCount = $("pickedCount");
+    const targetCount = $("targetCount");
+    const totalCount = $("totalCount");
+    const queueSizeEl = $("queueSize");
+    const queueBadge = queueSizeEl ? queueSizeEl.parentElement : null; // ← ДОБАВЬ
 
-    // iNat странички
-    inatPage: 1,
-    inatPerPage: 200,
-    inatTotal: 0,
-    inatFinished: false,
 
-    // таксон инфо
-    vern_en: [],
-    vern_ru: [],
-    species_name: "",
-    species_id: null,
-
-    // буфер карточек (плоский список фоток)
-    buffer: [],         // [{photo, fields...}]
-    // показаемая "UI-страница" по 10 штук
-    uiPageIndex: 0,
-
-    // выбор
-    picked: new Map(),  // photo_id -> manifest row
-    skipped: new Set(), // photo_id
-
-    // техн.
-    loading: false,
-    seenPhotos: new Set(),
-};
-
-// --- утилиты ---
-
-function escapeHtml(s) {
-    return (s || "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
-}
-
-function originalUrl(u) {
-    // iNat photo.url обычно .../square.jpg | small | medium | large -> original
-    return u.replace(/(square|small|medium|large)\.(jpe?g|png)$/i, "original.$2");
-}
-
-function getGenusFamilyFromTaxon(taxon) {
-    // пытаемся достать genus/family из ancestors
-    let genus = null, family = null;
-    const anc = taxon?.ancestors || [];
-    for (const a of anc) {
-        if (!a || !a.rank) continue;
-        if (a.rank === "genus") genus = a.name || genus;
-        if (a.rank === "family") family = a.name || family;
-    }
-    // иногда сам taxon и есть genus
-    if (!genus && taxon?.rank === "genus") genus = taxon.name;
-    return {genus, family};
-}
-
-function updateKPI() {
-    targetCount.textContent = state.target;
-    pickedCount.textContent = state.picked.size;
-    totalCount.textContent = state.inatTotal;
-    const pageHuman = state.uiPageIndex + 1;
-    uiPage.textContent = pageHuman;
-    uiPage2.textContent = pageHuman;
-    const canPrev = state.uiPageIndex > 0;
-    const canNext = (state.uiPageIndex + 1) * PAGE_SIZE < state.buffer.length || !state.inatFinished;
-    btnPrev.disabled = btnPrev2.disabled = !canPrev;
-    btnNext.disabled = btnNext2.disabled = !canNext;
-}
-
-function bannerIfSmall() {
-    // если найдено мало (<100) — предложить выбрать все
-    if (state.inatTotal > 0 && state.inatTotal < 100) {
-        hint.style.display = "";
-        const remaining = state.inatTotal - state.picked.size;
-        hint.innerHTML = `
-      <b>Мало изображений для этого таксона (всего ${state.inatTotal}).</b>
-      Можно забрать всё сразу. <button id="pickAll" class="badge yes">Pick all</button>
-      <span class="muted">Мы всё равно будем подгружать карточки</span>`;
-        $("#pickAll").onclick = () => {
-            // добавляем все, что уже в буфере, и по мере загрузки — тоже
-            for (const it of state.buffer) tryPick(it);
-            renderPage();
-            updateKPI();
-        };
-    } else {
-        hint.style.display = "none";
-        hint.innerHTML = "";
-    }
-}
-
-function manifestRowFromItem(it) {
-    return {
-        photo_id: it.photo_id,
-        observation_id: it.observation_id,
-        src: "inat",
-        photo_url: originalUrl(it.photo_url),
-        observation_url: it.observation_url,
-        license: it.license || "",
-        attribution: it.attribution || "",
-        species_id: it.species_id ?? null,
-        species_name: it.species_name || "",
-        genus: it.genus || null,
-        family: it.family || null,
-        vernacular_en: state.vern_en,
-        vernacular_ru: state.vern_ru,
-        place_id: it.place_id ?? null,
-        lat: it.lat ?? null,
-        lng: it.lng ?? null,
-        positional_accuracy: it.positional_accuracy ?? null,
-        observed_on: it.observed_on || "",
-        faves: it.faves ?? 0,
-        organ: null,
-        split: null,
-        sha256: null
-    };
-}
-
-// --- загрузка/парсинг ---
-
-async function resolveTaxonInputToIdAndNames() {
-    const v = (taxonInput.value || "").trim();
-    state.taxonLatin = v;
-    state.vern_en = [];
-    state.vern_ru = [];
-    state.species_name = "";
-    state.species_id = null;
-
-    if (!v) throw new Error("Введите taxon_id или латинское имя");
-
-    if (/^\d+$/.test(v)) {
-        state.taxonId = v;
-    } else {
-        // по имени → taxa
-        const r = await fetch(`/api/inat/taxa?q=${encodeURIComponent(v)}&is_active=true&per_page=5`);
-        const j = await r.json();
-        const first = (j.results || [])[0];
-        if (!first) throw new Error("Таксон не найден");
-        state.taxonId = String(first.id);
-        state.species_name = first.name || v;
-        state.species_id = first.id || null;
-    }
-
-    // имена EN/RU
-    try {
-        const rr = await fetch(`/api/latin2common?name=${encodeURIComponent(state.species_name || v)}`);
-        const jj = await rr.json();
-        state.vern_en = Array.isArray(jj.en) ? jj.en : [];
-        state.vern_ru = Array.isArray(jj.ru) ? jj.ru : [];
-    } catch {
-    }
-
-    namesBox.textContent = `EN: ${state.vern_en.slice(0, 3).join(", ") || "—"} | RU: ${state.vern_ru.slice(0, 3).join(", ") || "—"}`;
-}
-
-async function fetchInatPage() {
-    if (state.loading || state.inatFinished) return;
-    state.loading = true;
-
-    const q = new URLSearchParams({
-        taxon_id: state.taxonId,
-        per_page: String(state.inatPerPage),
-        page: String(state.inatPage),
-        quality_grade: "research",
-        photo_license: state.license,
-        order_by: state.sort,
-        order: state.sort === "observed_on" ? "desc" : "desc",
-        geo: "true",
-        verifiable: "true",
-        locale: "en"
+    // скрыть лишнее в шапке
+    ["placeInput", "licSelect", "sortSelect", "namesBox", "btnCopy", "btnJsonl"].forEach(id => {
+        const el = $(id);
+        if (el) el.style.display = "none";
     });
-    if ((state.placeId || "").trim()) q.set("place_id", state.placeId.trim());
 
-    const r = await fetch(`/api/inat/observations?${q.toString()}`);
-    const j = await r.json();
+    // --- State ---
+    let state = {
+        inat_taxon_id: null,
+        latin: "",
+        gbif_id: "",
+        common_en: "",
+        common_ru: "",
+        per_page: 10,
+        page: 1,
+        total: 0,
+        picked: new Map(),   // photo_id -> normalized item
+        cache: new Map(),    // "page" -> items[]
 
-    const results = j.results || [];
-    state.inatTotal = j.total_results ?? state.inatTotal;
+        // очередь синхронизаций
+        queue: [],           // массив снапшотов
+        inflight: false,     // есть активный POST
+        snapshotVersion: 0
+    };
 
-    // плоский список фоток
-    for (const o of results) {
-        if (!Array.isArray(o.photos)) continue;
-        const taxon = o.taxon || {};
-        const {genus, family} = getGenusFamilyFromTaxon(taxon);
-        for (const p of o.photos) {
-            const pid = p.id;
-            if (!pid || state.seenPhotos.has(pid)) continue;
-            state.seenPhotos.add(pid);
-            state.buffer.push({
-                photo_id: pid,
-                observation_id: o.id,
-                photo_url: p.url || "",
-                license: (p.license_code || "").toUpperCase(),
-                attribution: p.attribution || "",
-                species_id: taxon.id ?? null,
-                species_name: taxon.name || "",
-                genus, family,
-                place_id: (o.place_ids || [])[0] ?? null,
-                lat: o.geojson?.coordinates?.[1] ?? null,
-                lng: o.geojson?.coordinates?.[0] ?? null,
-                positional_accuracy: o.positional_accuracy ?? null,
-                observed_on: o.observed_on || "",
-                faves: o.faves_count ?? 0,
-                observation_url: o.uri || `https://www.inaturalist.org/observations/${o.id}`
-            });
+    const queueKey = () => state.inat_taxon_id ? `pp:queue:${state.inat_taxon_id}` : null;
+
+    // сетка-галерея
+    grid.classList.add("grid");
+    grid.style.gridTemplateColumns = "repeat(auto-fill, minmax(260px, 1fr))";
+    grid.style.gap = "10px";
+
+    function setLoading(on) {
+        grid.innerHTML = "";
+        if (on) {
+            for (let i = 0; i < state.per_page; i++) {
+                const sk = document.createElement("div");
+                sk.className = "card";
+                sk.style.minHeight = "190px";
+                grid.appendChild(sk);
+            }
         }
     }
 
-    // флаги пагинации
-    const received = results.length;
-    const per = Number(j.per_page || state.inatPerPage);
-    const page = Number(j.page || state.inatPage);
-    const total = Number(j.total_results || 0);
-    // iNat может возвращать total > per*page даже если фоток нет (фильтр по фото). Ориентируемся на фактические фотки.
-    if (received === 0 || per * page >= total) {
-        state.inatFinished = true;
-    } else {
-        state.inatPage += 1;
+    function updateBadges() {
+        pickedCount.textContent = String(state.picked.size);
+        const target = Number(targetInput.value || 0);
+        targetCount.textContent = isFinite(target) && target > 0
+            ? (state.total && state.total < target ? `${target} (меньше: ${state.total})` : String(target))
+            : "0";
+        totalCount.textContent = String(state.total || 0);
+        pageTop.textContent = String(state.page);
+        pageBottom.textContent = String(state.page);
+        if (queueSizeEl) queueSizeEl.textContent = String(state.queue.length);
+
+        if (queueBadge) {
+            const has = state.queue.length > 0;
+            queueBadge.style.background = has ? "#1f1a0a" : "#0f1a13";
+            queueBadge.style.borderColor = has ? "#6f5d2b" : "#1f5134";
+            queueBadge.style.color = has ? "#ffe3a1" : "#b3ffd8";
+        }
+
     }
 
-    state.loading = false;
-    bannerIfSmall();
-    updateKPI();
-}
-
-async function ensureBufferForNextPage() {
-    const needUntil = (state.uiPageIndex + 1) * PAGE_SIZE;
-    while (state.buffer.length < needUntil && !state.inatFinished) {
-        await fetchInatPage();
-    }
-}
-
-// --- рендер/пагинация ---
-
-function cardHTML(it) {
-    const picked = state.picked.has(it.photo_id);
-    const skipped = state.skipped.has(it.photo_id);
-    const cls = `card ${picked ? "pick" : ""} ${skipped ? "skip" : ""}`;
-    const tax = escapeHtml(it.species_name || "");
-    const lic = escapeHtml(it.license || "");
-    const date = escapeHtml(it.observed_on || "");
-    const user = ""; // в манифест не обязателен, можно не показывать логин
-    const faves = it.faves ?? 0;
-
-    return `
-    <div class="${cls}" data-photo="${it.photo_id}">
-      <img class="thumb" src="${it.photo_url}" alt="">
-      <div class="muted" style="margin-top:.35rem">${tax || "—"} • ${date || "—"}</div>
-      <div class="row2">
-        <span class="pill">${lic || "-"}</span>
-        <span class="muted">❤ ${faves}</span>
-      </div>
-      <div class="row2">
-        <button class="btnPick">${picked ? "Unpick" : "Pick"}</button>
-        <a class="muted" href="${it.observation_url}" target="_blank">open</a>
-        <button class="btnSkip" title="Скрыть карточку">Skip</button>
-      </div>
-    </div>`;
-}
-
-function renderPage() {
-    const start = state.uiPageIndex * PAGE_SIZE;
-    const end = Math.min(start + PAGE_SIZE, state.buffer.length);
-    const slice = state.buffer.slice(start, end);
-
-    // если страница пустая, но ещё можно грузить — подгружаем и повторяем
-    if (slice.length === 0 && !state.inatFinished) {
-        ensureBufferForNextPage().then(renderPage);
-        return;
+    async function resolveTaxon(q) {
+        const url = `/api/resolve_taxon?q=${encodeURIComponent(q)}`;
+        const r = await fetch(url);
+        const js = await r.json();
+        if (!js.ok) throw new Error(js.error || "resolve failed");
+        state.inat_taxon_id = js.inat_taxon_id;
+        state.latin = js.latin || "";
+        state.gbif_id = js.gbif_id || "";
+        state.common_en = js.common_en || "";
+        state.common_ru = js.common_ru || "";
     }
 
-    grid.innerHTML = slice.map(cardHTML).join("");
+    function normalizeItem(it) {
+        return {
+            photo_id: String(it.photo_id),
+            observation_id: String(it.observation_id || ""),
+            best_url: String(it.best_url || it.thumb_url || ""),
+            width: it.width || "",
+            height: it.height || "",
+            license: String(it.license || ""),
+            attribution: String(it.attribution || ""),
+            observed_on: String(it.observed_on || ""),
+            time_observed_at: String(it.time_observed_at || ""),
+            user_login: String(it.user_login || ""),
+            place_guess: String(it.place_guess || ""),
+            quality_grade: String(it.quality_grade || "")
+        };
+    }
 
-    // обработчики — быстрый 1-клик
-    for (const card of grid.querySelectorAll(".card")) {
-        const pid = Number(card.getAttribute("data-photo"));
-        const it = state.buffer.find(x => x.photo_id === pid);
+    async function fetchPage(page) {
+        const params = new URLSearchParams({
+            taxon_id: state.inat_taxon_id,
+            page,
+            per_page: state.per_page,
+            sort: "faves",
+        });
+        const r = await fetch(`/api/inat/photos?${params.toString()}`);
+        const js = await r.json();
+        if (!js.ok) throw new Error(js.error || "list failed");
+        state.total = js.total || 0;
+        state.cache.set(String(page), js.items || []);
+        return js.items || [];
+    }
 
-        // клик по изображению — toggle pick
-        const img = card.querySelector(".thumb");
-        img.addEventListener("click", () => {
-            togglePick(it);
-            // обновим подпись кнопки
-            const b = card.querySelector(".btnPick");
-            b.textContent = state.picked.has(pid) ? "Unpick" : "Pick";
-            card.classList.toggle("pick", state.picked.has(pid));
-            updateKPI();
-            autoAdvanceIfNeeded();
+    function makeTile(imgUrl, itRaw) {
+        const it = normalizeItem(itRaw);
+        const key = it.photo_id;
+
+        const card = document.createElement("div");
+        card.className = "card";
+        card.style.padding = "0";
+        card.style.overflow = "hidden";
+        card.style.position = "relative";
+        card.style.border = "1px solid #1a2029";
+
+        const box = document.createElement("div");
+        box.style.width = "100%";
+        box.style.aspectRatio = "4 / 3";
+        box.style.position = "relative";
+        box.style.background = "#0a0e13";
+
+        const img = document.createElement("img");
+        img.loading = "lazy";
+        img.src = imgUrl;
+        img.alt = key;
+        img.style.position = "absolute";
+        img.style.inset = "0";
+        img.style.width = "100%";
+        img.style.height = "100%";
+        img.style.objectFit = "cover";
+
+        box.appendChild(img);
+        card.appendChild(box);
+
+        const selected = state.picked.has(key);
+        card.style.outline = selected ? "3px solid var(--acc)" : "1px solid #1a2029";
+
+        card.addEventListener("click", () => {
+            if (state.picked.has(key)) {
+                state.picked.delete(key);
+                card.style.outline = "1px solid #1a2029";
+            } else {
+                state.picked.set(key, it);
+                card.style.outline = "3px solid var(--acc)";
+            }
+            updateBadges();
+            enqueueSync(); // ← ставим в очередь (индикатор ↑)
         });
 
-        // кнопки
-        card.querySelector(".btnPick").onclick = () => {
-            togglePick(it);
-            const b = card.querySelector(".btnPick");
-            b.textContent = state.picked.has(pid) ? "Unpick" : "Pick";
-            card.classList.toggle("pick", state.picked.has(pid));
-            updateKPI();
-            autoAdvanceIfNeeded();
-        };
-
-        card.querySelector(".btnSkip").onclick = () => {
-            state.skipped.add(pid);
-            card.classList.add("skip");
-            autoAdvanceIfNeeded();
-        };
+        return card;
     }
 
-    updateKPI();
-}
-
-function nextUiPage() {
-    state.uiPageIndex += 1;
-    ensureBufferForNextPage().then(renderPage);
-}
-
-function prevUiPage() {
-    if (state.uiPageIndex > 0) {
-        state.uiPageIndex -= 1;
-        renderPage();
+    function renderItems(items) {
+        grid.innerHTML = "";
+        for (const it of items) {
+            const card = makeTile(it.best_url || it.thumb_url, it);
+            grid.appendChild(card);
+        }
+        updateBadges();
     }
-}
 
-function autoAdvanceIfNeeded() {
-    // если на странице все карточки либо выбраны, либо скипнуты — и цель не достигнута — переходим далее
-    const start = state.uiPageIndex * PAGE_SIZE;
-    const end = Math.min(start + PAGE_SIZE, state.buffer.length);
-    let allDone = true;
-    for (let i = start; i < end; i++) {
-        const pid = state.buffer[i]?.photo_id;
-        if (!pid) continue;
-        if (!state.picked.has(pid) && !state.skipped.has(pid)) {
-            allDone = false;
-            break;
+    async function showPage(p) {
+        state.page = p;
+        updateBadges();
+        const key = String(p);
+        if (state.cache.has(key)) {
+            renderItems(state.cache.get(key));
+        } else {
+            setLoading(true);
+            const items = await fetchPage(p);
+            renderItems(items);
+        }
+        prefetch(p + 1);
+        prefetch(p + 2);
+    }
+
+    async function prefetch(p) {
+        if (p <= 0) return;
+        const key = String(p);
+        if (state.cache.has(key)) return;
+        try {
+            await fetchPage(p);
+        } catch (_) {
         }
     }
-    if (allDone && state.picked.size < state.target) {
-        nextUiPage();
+
+    // ---------- Очередь/воркер ----------
+    function snapshotSelection() {
+        return {
+            version: ++state.snapshotVersion,
+            taxon_id: state.inat_taxon_id,
+            latin: state.latin || "",
+            gbif_id: state.gbif_id || "",
+            common_en: state.common_en || "",
+            common_ru: state.common_ru || "",
+            selected: Array.from(state.picked.values()) // нормализовано
+        };
     }
-}
 
-// --- выбор ---
-
-function tryPick(it) {
-    if (!it) return;
-    if (state.picked.has(it.photo_id)) return;
-    state.picked.set(it.photo_id, manifestRowFromItem(it));
-}
-
-function togglePick(it) {
-    if (!it) return;
-    if (state.picked.has(it.photo_id)) {
-        state.picked.delete(it.photo_id);
-    } else {
-        tryPick(it);
+    function saveQueue() {
+        const k = queueKey();
+        if (!k) return;
+        try {
+            localStorage.setItem(k, JSON.stringify({queue: state.queue}));
+        } catch (_) {
+        }
     }
-}
 
-// --- экспорт ---
+    function loadQueue() {
+        const k = queueKey();
+        if (!k) return;
+        try {
+            const raw = localStorage.getItem(k);
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (parsed && Array.isArray(parsed.queue)) {
+                state.queue = parsed.queue;
+            }
+        } catch (_) {
+        }
+    }
 
-function copyURLs() {
-    const urls = [...state.picked.values()].map(v => v.photo_url).join("\n");
-    navigator.clipboard.writeText(urls).then(() => {
-    }, () => {
+    function enqueueSync() {
+        const snap = snapshotSelection();
+        state.queue.push(snap);   // FIFO — каждый клик отдельной задачей
+        saveQueue();
+        updateBadges();           // Queue:N ↑
+        if (!state.inflight) processQueue();
+    }
+
+    async function processQueue() {
+        if (state.inflight) return;
+        state.inflight = true;
+        try {
+            while (state.queue.length > 0) {
+                const current = state.queue[0]; // НЕ удаляем до 200
+                try {
+                    const r = await fetch("/api/collect/sync", {
+                        method: "POST",
+                        headers: {"Content-Type": "application/json"},
+                        body: JSON.stringify(current),
+                        keepalive: true
+                    });
+                    // если сервер вернул не-200 — считаем ошибкой
+                    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                    await r.json().catch(() => ({}));
+                    // успех → снимаем из очереди, обновляем индикатор
+                    state.queue.shift();
+                    saveQueue();
+                    updateBadges(); // Queue:N ↓ (по факту пришедшего 200)
+                } catch (e) {
+                    // сеть/сервер недоступны — оставляем current в очереди, выходим
+                    break;
+                }
+            }
+        } finally {
+            state.inflight = false;
+            // если пока отправляли добавились новые — дожмём
+            if (state.queue.length > 0) processQueue();
+        }
+    }
+
+    // Перед закрытием — отправим последний снап и оставим очередь в localStorage
+    window.addEventListener("beforeunload", () => {
+        const last = state.queue.length > 0 ? state.queue[state.queue.length - 1] : snapshotSelection();
+        if (!last || !last.taxon_id) return;
+        const blob = new Blob([JSON.stringify(last)], {type: "application/json"});
+        try {
+            navigator.sendBeacon("/api/collect/sync", blob);
+        } catch (_) {
+        }
+        saveQueue();
     });
-}
 
-function exportCSV() {
-    const headers = ["photo_id", "observation_id", "src", "photo_url", "observation_url", "license", "attribution", "species_id", "species_name", "genus", "family", "vernacular_en", "vernacular_ru", "place_id", "lat", "lng", "positional_accuracy", "observed_on", "faves", "organ", "split", "sha256"];
-    const lines = [headers.join(",")];
-    for (const v of state.picked.values()) {
-        const row = [
-            v.photo_id, v.observation_id, v.src, v.photo_url, v.observation_url, v.license, v.attribution,
-            v.species_id, v.species_name, v.genus, v.family,
-            JSON.stringify(v.vernacular_en || []), JSON.stringify(v.vernacular_ru || []),
-            v.place_id, v.lat, v.lng, v.positional_accuracy, v.observed_on, v.faves, v.organ, v.split, v.sha256
-        ].map(x => `"${String(x ?? "").replace(/"/g, '""')}"`);
-        lines.push(row.join(","));
-    }
-    const blob = new Blob([lines.join("\n")], {type: "text/csv"});
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "manifest.csv";
-    a.click();
-}
+    // ---------- actions ----------
+    btnLoad?.addEventListener("click", async () => {
+        try {
+            state.picked.clear();
+            state.cache.clear();
+            state.queue = [];
+            state.inflight = false;
+            await resolveTaxon(taxonInput.value.trim());
+            state.per_page = 10;
+            await showPage(1);
+            updateBadges();
+            // восстановим хвост очереди для этого таксона (если был)
+            loadQueue();
+            updateBadges();
+            processQueue(); // догнать «хвост»
+            // пустой снап для species.csv/папки (как init)
+            enqueueSync();
+        } catch (e) {
+            alert(e.message || e);
+        }
+    });
 
-function exportJSONL() {
-    const lines = [...state.picked.values()].map(v => JSON.stringify(v));
-    const blob = new Blob([lines.join("\n")], {type: "application/json"});
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "manifest.jsonl";
-    a.click();
-}
+    btnPrevTop?.addEventListener("click", () => {
+        if (state.page > 1) showPage(state.page - 1);
+    });
+    btnPrevBottom?.addEventListener("click", () => {
+        if (state.page > 1) showPage(state.page - 1);
+    });
+    btnNextTop?.addEventListener("click", () => {
+        showPage(state.page + 1);
+    });
+    btnNextBottom?.addEventListener("click", () => {
+        showPage(state.page + 1);
+    });
 
-// --- main flow ---
+    // Target badge live
+    targetCount.textContent = String(Number(targetInput.value || 0));
+    targetInput?.addEventListener("input", () => updateBadges());
 
-async function startLoad() {
-    // сброс
-    state.buffer = [];
-    state.seenPhotos = new Set();
-    state.picked.clear();
-    state.skipped.clear();
-    state.uiPageIndex = 0;
-    state.inatPage = 1;
-    state.inatFinished = false;
-    state.inatTotal = 0;
-
-    state.placeId = (placeInput.value || "").trim();
-    state.target = Math.max(1, parseInt(targetInput.value || "200", 10));
-    state.license = licSelect.value || "cc0,cc-by,cc-by-nc";
-    state.sort = sortSelect.value || "faves";
-    targetCount.textContent = state.target;
-
-    try {
-        await resolveTaxonInputToIdAndNames();
-    } catch (e) {
-        alert(e.message || "Ошибка в taxon");
-        return;
-    }
-
-    await ensureBufferForNextPage();
-    renderPage();
-    updateKPI();
-}
-
-// нажатия
-btnLoad.onclick = startLoad;
-btnNext.onclick = nextUiPage;
-btnNext2.onclick = nextUiPage;
-btnPrev.onclick = prevUiPage;
-btnPrev2.onclick = prevUiPage;
-
-btnCopy.onclick = copyURLs;
-btnCSV.onclick = exportCSV;
-btnJSONL.onclick = exportJSONL;
+    // Enter запускает загрузку
+    taxonInput?.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") btnLoad?.click();
+    });
+})();

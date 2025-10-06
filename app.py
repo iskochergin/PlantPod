@@ -1,12 +1,8 @@
-import os, re, json, time, shutil, zipfile, threading, logging, tempfile, subprocess
+# app.py — основное приложение (спин/модели/загрузка ZIP) + подключение пикера
+import os, re, json, time, shutil, zipfile, threading, logging
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template, send_from_directory, abort
 from werkzeug.exceptions import RequestEntityTooLarge
-
-# --- для прокси ---
-import urllib.request
-import urllib.parse
-import urllib.error
 
 from threed import (
     CFG, _load_port, UPLOAD_PASSWORD,
@@ -32,7 +28,7 @@ def handle_413(_e):
     return jsonify({"ok": False, "error": "file too large", "max_mb": MAX_ZIP_MB}), 413
 
 
-# ---- API просмотра (существующее) ----
+# ---- Главная/файлы/кэш ----
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -88,7 +84,6 @@ def api_spin(dataset_rel):
         if not urls_rel:
             urls_rel = ensure_spin_cache(leaf, max_w=max_w, max_frames=max_frames)
     else:
-        # нет каталога датасета — читаем напрямую из кэша
         urls_rel = list_cached_webp_raw(rel)
 
     if urls_rel:
@@ -99,7 +94,7 @@ def api_spin(dataset_rel):
     return jsonify({"ok": False, "error": "no frames found"}), 404
 
 
-# ---- Upload ZIP (существующее) ----
+# ---- Upload ZIP ----
 @app.route("/api/upload_zip", methods=["POST"])
 def api_upload_zip():
     if request.form.get("password", "") != UPLOAD_PASSWORD:
@@ -130,7 +125,6 @@ def api_upload_zip():
     target_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        # 1) анализируем архив: если один верхний каталог — флэттим его
         with zipfile.ZipFile(str(up_path), "r") as zf:
             top_levels = set()
             file_members = []
@@ -142,7 +136,6 @@ def api_upload_zip():
                 file_members.append((m, parts))
             strip_depth = 1 if len(top_levels) == 1 else 0
 
-            # 2) распаковка (с учётом strip_depth)
             for m, parts in file_members:
                 rel_path = Path(*parts[strip_depth:])
                 if not rel_path.parts:
@@ -156,14 +149,12 @@ def api_upload_zip():
 
         write_meta(target_dir, display_name)
 
-        # 3) чистим старый кэш под веткой
         try:
             cache_sub = safe_join_under(CACHE_DIR, dataset_rel)
             if cache_sub.exists(): shutil.rmtree(cache_sub)
         except Exception:
             pass
 
-        # 4) строим webp для каждого ЛИСТА
         spin_max_w = int(CFG.get("spin_max_w", 1280))
         spin_max_frames = int(CFG.get("spin_max_frames", 90))
 
@@ -178,10 +169,9 @@ def api_upload_zip():
                 built_for.append(rel.as_posix())
                 abs_leaf = safe_join_under(DATA_DIR, rel)
                 delete_originals_recursively(abs_leaf)
-                # не удаляем корень набора; чистим только пустые вложенные
                 cleanup_empty_dirs(abs_leaf, stop_at=target_dir)
 
-        _safe_unlink(up_path)  # zip удаляем после распаковки
+        _safe_unlink(up_path)
 
         return jsonify({
             "ok": True,
@@ -209,7 +199,6 @@ def api_delete_dataset():
     try:
         rel = safe_rel_path(ds)
         target = safe_join_under(DATA_DIR, rel)
-        # удаляем и кэш даже если каталога данных нет
         try:
             shutil.rmtree(target)
         except Exception:
@@ -223,169 +212,15 @@ def api_delete_dataset():
         return jsonify({"ok": False, "error": str(e)}), 400
 
 
-# =========================
-# Plant Picker (новое)
-# =========================
+# ---- Подключаем Plant Picker (страница + API) ----
+from picker import picker_page_bp, picker_api_bp, init_picker
 
-# --- страница ---
-@app.route("/picker")
-def picker_page():
-    return render_template("picker.html")
+app.register_blueprint(picker_page_bp)  # /picker
+app.register_blueprint(picker_api_bp, url_prefix="/api")  # /api/resolve_taxon, /api/inat/*, /api/collect/*
+init_picker(app)
 
-
-# --- прокси к iNaturalist/GBIF/Wikidata с троттлингом 1 req/s и бэкоффом 429 ---
-
-INAT_BASE = "https://api.inaturalist.org/v1"
-UA = CFG.get("plant_picker_ua") or "PlantPicker/1.0 (+contact@yourdomain)"
-_last_request_ts = 0.0
-_lock = threading.Lock()
-
-
-def _throttle():
-    global _last_request_ts
-    with _lock:
-        now = time.time()
-        dt = now - _last_request_ts
-        if dt < 1.10:
-            time.sleep(1.10 - dt)
-        _last_request_ts = time.time()
-
-
-def _get_json(url: str, params: dict | None = None, headers: dict | None = None, retries: int = 4):
-    if params:
-        qs = urllib.parse.urlencode(params, doseq=True)
-        url = f"{url}?{qs}"
-    while True:
-        _throttle()
-        req = urllib.request.Request(url, headers={
-            "User-Agent": UA,
-            "Accept": "application/json",
-            **(headers or {})
-        })
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                status = resp.status
-                body = resp.read()
-                if status == 200:
-                    return json.loads(body.decode("utf-8", errors="ignore"))
-                if status == 429 and retries > 0:
-                    ra = resp.headers.get("Retry-After")
-                    delay = min(int(ra or 2), 10)
-                    time.sleep(delay)
-                    retries -= 1
-                    continue
-                if 500 <= status < 600 and retries > 0:
-                    time.sleep(1.5)
-                    retries -= 1
-                    continue
-                raise RuntimeError(f"HTTP {status}")
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and retries > 0:
-                ra = e.headers.get("Retry-After")
-                delay = min(int(ra or 2), 10)
-                time.sleep(delay)
-                retries -= 1
-                continue
-            if 500 <= e.code < 600 and retries > 0:
-                time.sleep(1.5)
-                retries -= 1
-                continue
-            raise
-        except Exception as e:
-            if retries > 0:
-                time.sleep(1.0)
-                retries -= 1
-                continue
-            raise
-
-
-@app.route("/api/inat/observations")
-def inat_observations():
-    allow = {"taxon_id", "place_id", "quality_grade", "verifiable", "photo_license", "per_page", "page", "order_by",
-             "order", "id_above", "id_below", "locale", "geo"}
-    q = {}
-    for k, v in request.args.items():
-        if k in allow and v is not None:
-            q[k] = v
-    q.setdefault("per_page", "200")
-    q.setdefault("geo", "true")
-    # нормализуем список лицензий к верхнему регистру
-    if "photo_license" in q:
-        q["photo_license"] = ",".join([s.strip().upper().replace("CC-", "CC-").replace("CC0", "CC0")
-                                       for s in q["photo_license"].split(",") if s.strip()])
-    url = f"{INAT_BASE}/observations"
-    try:
-        data = _get_json(url, q)
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 502
-
-
-@app.route("/api/inat/taxa")
-def inat_taxa():
-    allow = {"q", "rank", "is_active", "per_page", "page"}
-    q = {}
-    for k, v in request.args.items():
-        if k in allow and v is not None:
-            q[k] = v
-    q.setdefault("per_page", "30")
-    url = f"{INAT_BASE}/taxa"
-    try:
-        data = _get_json(url, q)
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 502
-
-
-@app.route("/api/latin2common")
-def latin2common():
-    name = (request.args.get("name") or "").strip()
-    if not name:
-        return jsonify({"en": [], "ru": []})
-    en, ru = set(), set()
-
-    # GBIF match
-    try:
-        gbif_m = _get_json("https://api.gbif.org/v1/species/match", {"name": name})
-        key = gbif_m.get("usageKey")
-        if key:
-            v = _get_json(f"https://api.gbif.org/v1/species/{key}/vernacularNames", {"limit": 300})
-            for r in (v.get("results") or []):
-                lang = r.get("language")
-                val = r.get("vernacularName")
-                if not val: continue
-                if lang == "eng": en.add(val)
-                if lang == "rus": ru.add(val)
-    except Exception:
-        pass
-
-    # Wikidata fallback
-    if not en or not ru:
-        try:
-            sparql = """
-            SELECT ?name ?lang WHERE {
-              ?taxon wdt:P225 "%s" .
-              ?taxon p:P1843 ?s . ?s ps:P1843 ?name .
-              BIND(LANG(?name) AS ?lang)
-            }""" % name.replace('"', '\\"')
-            w = _get_json("https://query.wikidata.org/sparql",
-                          {"query": sparql},
-                          headers={"Accept": "application/sparql-results+json"})
-            for b in (w.get("results", {}).get("bindings") or []):
-                lang = b.get("lang", {}).get("value", "")
-                val = b.get("name", {}).get("value", "")
-                if not val: continue
-                if lang == "en": en.add(val)
-                if lang == "ru": ru.add(val)
-        except Exception:
-            pass
-
-    return jsonify({"en": sorted(en), "ru": sorted(ru)})
-
-
-# ---- Entrypoint ----
+# ---- Entrypoint / фоновые задачи ----
 try:
-    # удалить старые загруженные zip
     now = time.time()
     for p in UPLOADS_DIR.glob("*.zip"):
         try:

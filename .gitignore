@@ -6,3 +6,7 @@ config.json
 data/
 
 test.py
+
+*.log
+
+dataset_collect/

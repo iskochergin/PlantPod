@@ -5,6 +5,7 @@
     --txt: #e9eef4;
     --acc: #4cc9f0;
     --danger: #e25555;
+    --page-bottom-pad: 8px;
 }
 
 * {
@@ -20,6 +21,12 @@ body {
     background: var(--bg);
     color: var(--txt);
     font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+body::after {
+    content: "";
+    display: block;
+    height: calc(var(--page-bottom-pad) + env(safe-area-inset-bottom, 0px));
 }
 
 h1, h2 {
@@ -249,20 +256,40 @@ main {
 
 /* Spin slider overlay — мобильный удобный */
 .spin-slider {
-  position:absolute; left:0; right:0; bottom:0;
-  padding:12px 16px 18px;
-  background:linear-gradient(180deg, rgba(10,14,19,0) 0%, rgba(10,14,19,0.75) 40%, rgba(10,14,19,0.95) 100%);
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 12px 16px 18px;
+    background: linear-gradient(180deg, rgba(10, 14, 19, 0) 0%, rgba(10, 14, 19, 0.75) 40%, rgba(10, 14, 19, 0.95) 100%);
 }
+
 .spin-slider input[type="range"] {
-  width:100%; appearance:none; height:10px; border-radius:10px;
-  background:#1c2733; outline:none;
-  touch-action: pan-x;
+    width: 100%;
+    appearance: none;
+    height: 10px;
+    border-radius: 10px;
+    background: #1c2733;
+    outline: none;
+    touch-action: pan-x;
 }
+
 .spin-slider input[type="range"]::-webkit-slider-thumb {
-  appearance:none; width:26px; height:26px; border-radius:50%;
-  background:var(--acc); border:none; cursor:pointer;
-  box-shadow: 0 0 0 3px #09202a inset;
+    appearance: none;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--acc);
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 0 0 3px #09202a inset;
 }
+
 .spin-slider input[type="range"]::-moz-range-thumb {
-  width:26px; height:26px; border-radius:50%; background:var(--acc); border:none; cursor:pointer;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--acc);
+    border: none;
+    cursor: pointer;
 }

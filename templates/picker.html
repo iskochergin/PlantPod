@@ -1,160 +1,235 @@
 <!doctype html>
 <html lang="ru">
 <head>
-    <meta charset="utf-8"/>
-    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <meta charset="utf-8">
     <title>Plant Picker</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
     <link rel="stylesheet" href="/static/styles.css">
     <style>
+        /* Лёгкая подгонка под «табличный» вид */
+        body {
+            background: #0b1117;
+            color: #e6edf3;
+            margin-bottom: 20px;
+            /*padding-bottom: 120px;*/
+        }
+
+
         .toolbar {
             display: flex;
             flex-wrap: wrap;
-            gap: .5rem;
+            gap: .6rem;
             align-items: center;
-            margin-bottom: .75rem
+            margin: 16px 16px 10px;
         }
 
-        .toolbar input, .toolbar select {
-            background: #0e141b;
-            color: #cbd5e1;
+        .toolbar input[type="text"], .toolbar input[type="number"], .toolbar select {
+            background: #0f1621;
             border: 1px solid #1a2029;
-            border-radius: .5rem;
-            padding: .45rem .6rem
+            color: #e6edf3;
+            padding: .55rem .7rem;
+            border-radius: .6rem;
         }
 
         .toolbar button {
-            padding: .45rem .7rem
-        }
-
-        #grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-            gap: .75rem
-        }
-
-        .card.pick {
-            border: 1px solid #2f855a;
-            box-shadow: 0 0 0 1px #1c3f2f inset
-        }
-
-        .card.skip {
-            opacity: .55
-        }
-
-        .thumb {
-            width: 100%;
-            height: 150px;
-            object-fit: cover;
+            padding: .55rem .9rem;
             border-radius: .6rem;
-            border: 1px solid #1a2029
         }
 
-        .row2 {
+        .badge {
+            padding: .35rem .6rem;
+            border: 1px solid #1a2029;
+            border-radius: .6rem;
+            background: #0f1621;
+            color: #cbd5e1;
+        }
+
+        .stats {
             display: flex;
-            justify-content: space-between;
+            gap: .6rem;
             align-items: center;
+            margin: 0 16px 10px;
+            flex-wrap: wrap;
+        }
+
+        .actions {
+            display: flex;
             gap: .5rem;
-            margin-top: .35rem
+            align-items: center;
+            margin: 0 16px 12px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+
+        /* Пагинация сверху/снизу */
+        .pager {
+            display: flex;
+            align-items: center;
+            gap: .6rem;
+            margin: 8px 16px;
+        }
+
+        .pager .spacer {
+            flex: 1;
+        }
+
+        /* Табличный грид карточек */
+        #grid {
+            margin: 8px 16px 24px;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 8px;
+        }
+
+        @media (min-width: 720px) {
+            #grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* одна строка = одна запись */
+        .pp-row {
+            display: grid;
+            grid-template-columns: 88px 1fr 160px;
+            gap: 12px;
+            padding: 10px;
+            border: 1px solid #1a2029;
+            background: #0f1621;
+            border-radius: .7rem;
+            align-items: center;
+        }
+
+        .pp-thumb img {
+            width: 88px;
+            height: 66px;
+            object-fit: cover;
+            border-radius: .5rem;
+            border: 1px solid #1a2029;
+            background: #0b1117;
+        }
+
+        .pp-meta {
+            font-size: .92rem;
+            line-height: 1.25rem;
+            color: #cbd5e1;
+        }
+
+        .pp-meta .small {
+            color: #8aa1b2;
+            font-size: .82rem;
+        }
+
+        .pp-actions {
+            display: flex;
+            gap: .4rem;
+            justify-content: flex-end;
+        }
+
+        .pp-actions button {
+            padding: .45rem .7rem;
+            border-radius: .55rem;
+            cursor: pointer;
+        }
+
+        .btn {
+            background: #0ea5e9;
+            color: #09131a;
+            border: none;
+        }
+
+        .btn.secondary {
+            background: #1e2733;
+            color: #cbd5e1;
+            border: 1px solid #263140;
+        }
+
+        .btn.ghost {
+            background: #101823;
+            color: #cbd5e1;
+            border: 1px solid #1a2029;
+        }
+
+        .btn.success {
+            background: #10b981;
+            color: #04130e;
+        }
+
+        .btn.warn {
+            background: #f59e0b;
+            color: #1a1204;
+        }
+
+        .picked {
+            outline: 2px solid #10b981;
         }
 
         .muted {
-            color: #7a8a99;
-            font-size: .85rem
+            opacity: .65;
         }
 
-        .pill {
-            font-size: .75rem;
-            border: 1px solid #22303a;
-            border-radius: 999px;
-            padding: .15rem .45rem;
+        a.meta {
+            color: #9cc3ff;
+            text-decoration: none;
         }
 
-        .badge.yes {
-            background: #11301f;
-            border-color: #184d31;
-            color: #7de0a6
-        }
-
-        .pager {
-            display: flex;
-            gap: .5rem;
-            align-items: center;
-            justify-content: flex-end;
-            margin: .75rem 0
-        }
-
-        .hint {
-            background: #171f29;
-            border: 1px dashed #2b3b4d;
-            padding: .5rem .75rem;
-            border-radius: .6rem;
-            margin: .5rem 0
-        }
-
-        .kpi {
-            display: flex;
-            gap: 1rem;
-            align-items: center;
-            flex-wrap: wrap
-        }
-
-        .kpi span {
-            padding: .25rem .5rem;
-            background: #0f1720;
-            border: 1px solid #22303a;
-            border-radius: .4rem;
+        a.meta:hover {
+            text-decoration: underline;
         }
     </style>
 </head>
 <body>
-<div class="container">
-    <h2 style="margin:.2rem 0 .6rem 0">Plant Picker</h2>
+<div class="toolbar">
+    <input id="taxonInput" type="text" style="min-width:360px"
+           placeholder="Таксон: iNat id / GBIF id или URL / латинское имя"
+           title="Можно: 257713555 (iNat id), 3118274 или https://www.gbif.org/species/3118274 (GBIF), или латинское имя (напр., Plantago major)">
+    <input id="placeInput" type="text" style="width:150px"
+           placeholder="place_id (опц.)" title="ID региона iNaturalist. Можно оставить пустым">
+    <input id="targetInput" type="number" value="200" min="1" style="width:90px"
+           title="Целевое число отобранных фото">
+    <select id="licSelect" title="Фильтр лицензий">
+        <option value="cc0,cc-by,cc-by-nc">cc0, cc-by, cc-by-nc</option>
+        <option value="cc0">cc0</option>
+        <option value="cc0,cc-by">cc0, cc-by</option>
+        <option value="cc0,cc-by,cc-by-sa,cc-by-nd,cc-by-nc,cc-by-nc-sa,cc-by-nc-nd">все CC</option>
+    </select>
+    <select id="sortSelect" title="Сортировка">
+        <option value="faves">faves</option>
+        <option value="observed_on">observed_on</option>
+    </select>
+    <button id="btnLoad" class="btn" title="Загрузить первую порцию карточек">Load</button>
+    <span class="badge">Queue <b id="queueSize">0</b></span>
 
-    <div class="toolbar">
-        <input id="taxonInput" placeholder="taxon_id или латинское имя (например, Plantago major)" size="34">
-        <input id="placeInput" placeholder="place_id (опц.)" size="10">
-        <input id="targetInput" value="200" size="5" title="целевое число фото">
-        <select id="licSelect" title="фильтр лицензий">
-            <option value="cc0,cc-by,cc-by-nc">cc0, cc-by, cc-by-nc</option>
-            <option value="cc0">cc0</option>
-            <option value="cc0,cc-by">cc0, cc-by</option>
-            <option value="cc0,cc-by,cc-by-sa,cc-by-nd,cc-by-nc,cc-by-nc-sa,cc-by-nc-nd">все CC</option>
-        </select>
-        <select id="sortSelect" title="сортировка">
-            <option value="faves">faves</option>
-            <option value="observed_on">observed_on</option>
-        </select>
-        <button id="btnLoad">Load</button>
-        <div class="kpi">
-            <span id="namesBox">EN/RU: —</span>
-            <span>Picked <b id="pickedCount">0</b> / Target <b id="targetCount">200</b></span>
-            <span>Total <b id="totalCount">0</b></span>
-        </div>
-    </div>
-
-    <div id="smallHint" class="hint" style="display:none"></div>
-
-    <div class="pager">
-        <button id="btnPrev" disabled>◀ Prev</button>
-        <span class="muted">Page <b id="uiPage">1</b></span>
-        <button id="btnNext" disabled>Next ▶</button>
-    </div>
-
-    <div id="grid"></div>
-
-    <div class="pager">
-        <div class="row" style="gap:.5rem">
-            <button id="btnCopy">Copy URLs</button>
-            <button id="btnCSV">Export CSV</button>
-            <button id="btnJSONL">Export JSONL</button>
-        </div>
-        <div style="flex:1"></div>
-        <button id="btnPrev2" disabled>◀ Prev</button>
-        <span class="muted">Page <b id="uiPage2">1</b></span>
-        <button id="btnNext2" disabled>Next ▶</button>
-    </div>
+    <span id="namesBox" class="badge" title="Англ./рус. названия">EN/RU: —</span>
+    <span class="badge">Picked <b id="pickedCount">0</b> / Target <b id="targetCount">200</b></span>
+    <span class="badge">Total <b id="totalCount">0</b></span>
 </div>
 
-<script src="/static/picker.js"></script>
+<div class="pager" id="pagerTop">
+    <button id="btnPrevTop" class="btn ghost">◀ Prev</button>
+    <span>Page <b id="pageTop">1</b></span>
+    <div class="spacer"></div>
+    <button id="btnNextTop" class="btn ghost">Next ▶</button>
+</div>
+
+<div id="grid"><!-- строки рендерит picker.js --></div>
+
+<div class="pager" id="pagerBottom">
+    <button id="btnPrevBottom" class="btn ghost">◀ Prev</button>
+    <span>Page <b id="pageBottom">1</b></span>
+    <div class="spacer"></div>
+    <button id="btnNextBottom" class="btn ghost">Next ▶</button>
+</div>
+
+<div class="actions">
+    <button id="btnCopy" class="btn secondary">Copy URLs</button>
+    <button id="btnCsv" class="btn secondary">Export CSV</button>
+    <button id="btnJsonl" class="btn secondary">Export JSONL</button>
+    <span class="badge muted" title="Подсказка">Клик по «Pick» выбирает, повторный клик снимает выбор. Если фото мало (&lt;100) — появится предложение «взять все».</span>
+</div>
+
+<!-- Скрытая текстовая область — используем только для быстрого копирования URL при необходимости -->
+<textarea id="urlsBox" style="position:absolute; left:-9999px; top:-9999px;"></textarea>
+
+<script src="/static/picker.js" defer></script>
 </body>
 </html>
