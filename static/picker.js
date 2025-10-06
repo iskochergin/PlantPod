@@ -35,7 +35,7 @@
         gbif_id: "",
         common_en: "",
         common_ru: "",
-        per_page: 10,
+        per_page: 12,
         page: 1,
         total: 0,
         picked: new Map(),   // photo_id -> normalized item
@@ -130,6 +130,26 @@
         return js.items || [];
     }
 
+    async function fetchAndFill(page) {
+        const seen = new Set();
+        const acc = [];
+        let raw = page;
+        while (acc.length < state.per_page) {
+            const chunk = await fetchPage(raw);
+            if (!chunk || chunk.length === 0) break; // больше нечего добирать
+            for (const it of chunk) {
+                const id = String(it.photo_id);
+                if (seen.has(id)) continue;
+                seen.add(id);
+                acc.push(it);
+                if (acc.length >= state.per_page) break;
+            }
+            raw += 1; // идём на следующую сырую страницу, если всё ещё не хватило
+        }
+        state.cache.set(String(page), acc);
+        return acc;
+    }
+
     function makeTile(imgUrl, itRaw) {
         const it = normalizeItem(itRaw);
         const key = it.photo_id;
@@ -222,9 +242,10 @@
             renderItems(state.cache.get(key));
         } else {
             setLoading(true);
-            const items = await fetchPage(p);
+            const items = await fetchAndFill(p);
             renderItems(items);
         }
+
         prefetch(p + 1);
         prefetch(p + 2);
     }
@@ -234,7 +255,7 @@
         const key = String(p);
         if (state.cache.has(key)) return;
         try {
-            await fetchPage(p);
+            await fetchAndFill(p);
         } catch (_) {
         }
     }
@@ -336,7 +357,7 @@
             state.inflight = false;
             await resolveTaxon(taxonInput.value.trim());
             await fetchExistingSelected();
-            state.per_page = 10;
+            state.per_page = 12;
             await showPage(1);
             updateBadges();
             // восстановим хвост очереди для этого таксона (если был)
