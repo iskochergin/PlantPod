@@ -1,10 +1,9 @@
 (() => {
     const $ = (id) => document.getElementById(id);
 
-
     const toolbar = document.querySelector(".toolbar");
 
-// ---- ДОК ДЛЯ ОГОНЬКА (слева в тулбаре)
+    // ---- ДОК ДЛЯ ОГОНЬКА (слева в тулбаре)
     const streakDock = document.createElement("div");
     streakDock.className = "pp-streak-dock";
     streakDock.style.display = "inline-flex";
@@ -13,14 +12,14 @@
 
     const GOAL = 1;
 
-// ---- ПАНЕЛЬ АВТОРИЗАЦИИ (без огонька)
+    // ---- ПАНЕЛЬ АВТОРИЗАЦИИ (без огонька)
     const authBar = document.createElement("div");
     authBar.className = "pp-auth";
     authBar.id = "authBar";
 
-// Оба — в начало тулбара: сперва огонь, сразу за ним логин/профиль
+    // Оба — в начало тулбара: сперва огонь, сразу за ним логин/профиль
     toolbar.prepend(authBar);
-    // toolbar.prepend(streakDock);
+    toolbar.prepend(streakDock);
 
     // ===== Лидерборд (глобально, один раз)
     const lbWrap = document.createElement("div");
@@ -72,7 +71,7 @@
         });
     }
 
-// переключатели окна
+    // переключатели окна
     lbWrap.querySelectorAll(".seg-btn").forEach(b => {
         b.onclick = async () => {
             lbWrap.querySelectorAll(".seg-btn").forEach(x => x.classList.remove("seg-on"));
@@ -84,9 +83,7 @@
         };
     });
 
-
-// SVG/HTML огня (стейт управляется классом .on)
-// ВАЖНО: иконка и число на одной линии (inline-flex + align-items:center)
+    // SVG/HTML огня
     const flameHTML = (streakDays = 0, on = false) => `
   <span class="pp-flame ${on ? "on" : ""}" title="Серия дней"
         style="display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:10px;border:1px solid #1a2029;background:#0f1621;">
@@ -115,7 +112,6 @@
   </span>
 `;
 
-
     function updateFlameFromCounts() {
         const dayNow = Number((document.getElementById("cntDay")?.textContent) || 0);
         const flame = streakDock.querySelector(".pp-flame");
@@ -127,20 +123,19 @@
         if (el) el.textContent = String(Math.max(0, Number(n || 0)));
     }
 
-
-// ---- РЕНДЕР АВТОРИЗАЦИИ + ОГОНЬ СЛЕВА
+    // ---- РЕНДЕР АВТОРИЗАЦИИ + ОГОНЬ СЛЕВА
     function renderAuth(me) {
-        // обновляем огонь в левом доке
+        // огонь в левом доке
         if (me?.logged_in) {
             const s = me.stats || {day: 0, week: 0, streak_days: 0, today_done: false};
             streakDock.innerHTML = flameHTML(s.streak_days, !!s.today_done);
-            setStreakNumber(s.streak_days || 0);
+            setStreakNumber(s.streak_days || 0); // <- критично: число выставляем после вставки HTML
         } else {
             streakDock.innerHTML = flameHTML(0, false);
             setStreakNumber(0);
         }
 
-        // сам auth-bar без огня
+        // auth-bar
         if (!me?.logged_in) {
             authBar.innerHTML = `
       <div class="pp-auth__login">
@@ -149,8 +144,6 @@
         <button id="btnLogin" class="btn">Войти</button>
         <button id="btnTop" class="btn ghost" title="Лидерборд">Топ</button>
       </div>`;
-            if (me?.logged_in) setStreakNumber((me.stats || {}).streak_days || 0);
-
             authBar.querySelector("#btnLogin").onclick = async () => {
                 const username = authBar.querySelector("#authUser").value.trim();
                 const password = authBar.querySelector("#authPass").value;
@@ -204,7 +197,6 @@
     }
 
     fetchMe();
-
 
     // --- DOM
     const taxonInput = $("taxonInput");
@@ -461,7 +453,7 @@
 
     function renderItems(items) {
         grid.innerHTML = "";
-        boost = 6; // каждый раз первые 6 — быстрее
+        boost = 6;
         for (const it of items) {
             const card = makeTile(it.best_url || it.thumb_url, it);
             grid.appendChild(card);
@@ -568,7 +560,6 @@
                     if (delta !== 0) {
                         const dayEl = document.getElementById("cntDay");
                         const weekEl = document.getElementById("cntWeek");
-                        const streakEl = document.getElementById("streakDays"); // число рядом с огнём
 
                         const prevDay = Number(dayEl?.textContent || 0);
                         const newDay = Math.max(0, prevDay + delta);
@@ -576,35 +567,17 @@
                         if (dayEl) dayEl.textContent = String(newDay);
                         if (weekEl) weekEl.textContent = String(Math.max(0, Number(weekEl?.textContent || 0) + delta));
 
-                        // огонёк за/гасить по порогу GOAL
+                        // огонёк: включить/выключить
                         updateFlameFromCounts();
 
-                        // стрик: оптимистично — если сегодня перешли через порог вверх → минимум 1; если ушли ниже → 0
-                        if (streakEl) {
-                            if (prevDay < GOAL && newDay >= GOAL) {
-                                const cur = Number(streakEl.textContent || 0);
-                                if (cur < 1) streakEl.textContent = "1";
-                            } else if (prevDay >= GOAL && newDay < GOAL) {
-                                streakEl.textContent = "0";
-                            }
-                        }
-
+                        // стрик (локально): если пересекли порог вверх — как минимум 1; если вниз — 0
                         if (prevDay < GOAL && newDay >= GOAL) {
                             setStreakNumber(1);
                         } else if (prevDay >= GOAL && newDay < GOAL) {
                             setStreakNumber(0);
                         }
 
-                        // затем подтянуть «истину» с бэка (учтёт цепочку прошлых дней и точный стрик)
-                        try {
-                            await fetchMe();
-                        } catch {
-                        }
-                    }
-
-
-                    // и сразу подтягиваем «истину» (стрик, неделя и т.п.)
-                    if ((added + removed) > 0) {
+                        // подтянуть «истину» с бэка (точный streak_days)
                         try {
                             await fetchMe();
                         } catch {
@@ -624,7 +597,6 @@
             if (state.queue.length > 0) setTimeout(processQueue, 0);
         }
     }
-
 
     document.addEventListener("visibilitychange", () => {
         if (!document.hidden && state.queue.length > 0 && !state.inflight) {
