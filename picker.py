@@ -15,9 +15,9 @@ from PIL import Image, ImageOps, ImageFile
 from flask import Blueprint, jsonify, request, render_template
 
 try:
-    from picker_profile import record_added_for_request_user
+    from picker_profile import record_change_for_request_user
 except Exception:
-    def record_added_for_request_user(_):
+    def record_change_for_request_user(*_, **__):
         pass
 
 # Pillow: не падать на обрезанных файлах
@@ -599,7 +599,7 @@ def api_collect_sync():
         ok_flag = (len(failed_ids) == 0)
 
         try:
-            record_added_for_request_user(len(to_add))
+            record_change_for_request_user(added=len(to_add), removed=len(to_remove))
         except Exception:
             pass
 

@@ -207,34 +207,66 @@ a.meta:hover {
     color: #9cc3ff;
 }
 
-/* огонёк */
-.pp-flame {
-    display: inline-flex;
-    align-items: center;
-    gap: .35rem;
-    padding: .28rem .5rem;
-    border-radius: 999px;
-    border: 1px solid #1f2a38;
-    background: #0c141e;
-    color: #93a7bb;
+/* контейнер streak: слева широкая плашка + огонь */
+.pp-streak {
+  display:inline-flex; align-items:center; gap:10px;
+  margin: 0 6px 0 2px;
 }
 
-.pp-flame i {
-    width: 16px;
-    height: 18px;
-    display: inline-block;
-    background: conic-gradient(from 180deg at 50% 60%, #ffb54a, #ff7038, #ff3d2e, #ffb54a);
-    mask: radial-gradient(130% 90% at 50% 120%, #0000 64%, #000 65%) top / 100% 100% no-repeat;
-    border-radius: 2px;
-    filter: drop-shadow(0 0 6px rgba(255, 115, 64, .35));
+/* широкая плашка слева */
+.pp-streak-pill{
+  display:inline-flex; align-items:center; justify-content:center;
+  height:32px; padding:0 16px; min-width:84px;
+  border-radius:999px;
+  background:#0f1621; border:1px solid #1a2029;
+  color:#cbd5e1; font-weight:600; letter-spacing:.2px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.02);
 }
 
-.pp-flame.on {
-    border-color: #5b3a1b;
-    color: #ffd9a3;
-    background: #21140c;
-    box-shadow: inset 0 0 12px rgba(255, 115, 64, .12);
+.pp-streak-dock{
+  display:flex; align-items:center; gap:10px;
+  margin-right:10px;
 }
+
+
+/* сам огонь + число (увеличено) */
+.pp-flame{
+  display:inline-flex; align-items:center; gap:10px;
+  height:44px; padding:6px 14px;
+  border-radius:999px; border:1px solid #1a2029; background:#0f1621;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.02);
+  line-height:1; user-select:none;
+}
+.pp-flame svg{ width:28px; height:36px; display:block; }
+.pp-flame b{ font-weight:800; font-size:22px; color:#cbd5e1; font-variant-numeric: tabular-nums; }
+
+/* язычок пламени */
+.pp-flame .flick{ animation:pp-flick 1.4s ease-in-out infinite; transform-origin:50% 90%; }
+@keyframes pp-flick{
+  0%,100%{ transform: translateY(0) scale(1); filter:none; }
+  50%{ transform: translateY(-1px) scale(1.04); filter:drop-shadow(0 0 6px rgba(255,150,50,.35)); }
+}
+
+/* «выполнено сегодня»: мягкое зелёное свечение */
+.pp-flame.on{
+  border-color:#2c3b20; background:#0f1a13;
+  box-shadow: 0 0 0 1px rgba(16,185,129,.16), inset 0 0 22px rgba(16,185,129,.08);
+}
+.pp-flame.on b{ color:#a7f3d0; }
+
+/* «не выполнено»: серый огонь */
+.pp-flame:not(.on) svg{
+  filter: grayscale(.95) brightness(.9) contrast(1.1);
+  opacity:.95;
+}
+.pp-flame:not(.on) b{ color:#9aa8b6; }
+
+/* авторизационная панель — без огонька внутри */
+.pp-auth{ display:flex; align-items:center; gap:8px; }
+.pp-auth__login{ display:flex; align-items:center; gap:8px; }
+.pp-auth__user{ display:flex; align-items:center; gap:8px; }
+.pp-input{ background:#0f1621; border:1px solid #1a2029; color:#e6edf3; padding:.5rem .65rem; border-radius:.55rem; }
+.pp-user{ font-weight:600; color:#cbd5e1; }
 
 /* модалка лидерборда */
 .pp-modal.hidden {

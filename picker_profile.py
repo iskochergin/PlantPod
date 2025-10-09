@@ -2,17 +2,18 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, Tuple
 
 from flask import Blueprint, jsonify, request, session, current_app
 
 profile_bp = Blueprint("profile_bp", __name__)
 
 AUTH_DIR = Path("auth")
-USERS_PATH = AUTH_DIR / "users.json"  # логины/пароли в открытом виде
-PROFILES_PATH = AUTH_DIR / "profiles.json"  # счётчики, создаётся автоматически
-
+USERS_PATH = AUTH_DIR / "users.json"  # {"user":{"password":"plain"}}
+PROFILES_PATH = AUTH_DIR / "profiles.json"  # создаётся/обновляется автоматически
 AUTH_DIR.mkdir(parents=True, exist_ok=True)
+
+GOAL_PER_DAY = 1  # порог для «огонька»
 
 
 def _now_utc() -> datetime:
@@ -53,17 +54,10 @@ def _save_profiles(data: Dict[str, Dict[str, Any]]):
     _write_json(PROFILES_PATH, data)
 
 
-# ---- auth ----
-def _verify_password(user_rec: Dict[str, Any], password: str) -> bool:
-    # ПРОСТОЕ сравнение открытого пароля
-    return (user_rec.get("password") or "") == (password or "")
-
-
-# ---- stats helpers ----
 def _ensure_profile(profiles: Dict[str, Any], user: str) -> Dict[str, Any]:
     prof = profiles.get(user)
     if not prof:
-        prof = {"history": {}, "total": 0, "streak_days": 0, "streak_last": ""}
+        prof = {"history": {}, "total": 0, "streak_days": 0, "streak_last": ""}  # total мы будем пересчитывать
         profiles[user] = prof
     return prof
 
@@ -77,27 +71,66 @@ def _sum_window(history: Dict[str, int], days: int, today: str) -> int:
     return s
 
 
-def record_added_for_user(username: str, added: int):
-    if not username or added <= 0:
+def _recompute_total(history: Dict[str, int]) -> int:
+    return sum(int(v) for v in history.values())
+
+
+def _recompute_streak(history: Dict[str, int], today_key: str) -> Tuple[int, str]:
+    """
+    Считаем текущий стрик как количество подряд идущих дней,
+    заканчивающихся СЕГОДНЯ, в каждом из которых count >= GOAL_PER_DAY.
+    Если сегодня < GOAL_PER_DAY — текущий стрик = 0.
+    Возвращаем (streak_days, streak_last).
+    """
+    today_count = int(history.get(today_key, 0))
+    if today_count < GOAL_PER_DAY:
+        # сегодня не выполнено — стрика нет
+        # streak_last оставим как последний день, в который было выполнено (если надо — вычислим)
+        # найдём последний >= GOAL_PER_DAY для метаданных
+        d = datetime.fromisoformat(today_key)
+        last_ok = ""
+        for i in range(3650):  # ограничим поиск 10 годами
+            key = (d - timedelta(days=i)).date().isoformat()
+            if int(history.get(key, 0)) >= GOAL_PER_DAY:
+                last_ok = key
+                break
+        return 0, last_ok
+    # сегодня выполнено — считаем длину подряд
+    streak = 0
+    d = datetime.fromisoformat(today_key)
+    while True:
+        key = d.date().isoformat()
+        if int(history.get(key, 0)) >= GOAL_PER_DAY:
+            streak += 1
+            d = d - timedelta(days=1)
+        else:
+            break
+    return streak, today_key
+
+
+def record_change_for_user(username: str, added: int = 0, removed: int = 0):
+    """
+    Обновляет статистику:
+      - history[today] += added - removed (не ниже 0)
+      - total = sum(history.values()) (может уменьшаться)
+      - streak_days пересчитывается по правилу >= GOAL_PER_DAY
+    """
+    if not username:
         return
+    delta = int(added) - int(removed)
     profiles = _load_profiles()
     prof = _ensure_profile(profiles, username)
     today = _today_key()
-    prof["history"][today] = int(prof["history"].get(today, 0)) + int(added)
-    prof["total"] = int(prof.get("total", 0)) + int(added)
 
-    last = prof.get("streak_last") or ""
-    if last == "":
-        prof["streak_days"] = 1 if prof["history"][today] > 0 else 0
-        prof["streak_last"] = today
-    else:
-        if last != today:
-            last_dt = datetime.fromisoformat(last)
-            if (datetime.fromisoformat(today) - last_dt).days == 1 and prof["history"][today] > 0:
-                prof["streak_days"] = int(prof.get("streak_days", 0)) + 1
-            elif prof["history"][today] > 0:
-                prof["streak_days"] = 1
-            prof["streak_last"] = today
+    day_val = int(prof["history"].get(today, 0)) + delta
+    if day_val < 0:
+        day_val = 0
+    prof["history"][today] = day_val
+
+    prof["total"] = _recompute_total(prof["history"])
+    streak_days, streak_last = _recompute_streak(prof["history"], today)
+    prof["streak_days"] = streak_days
+    prof["streak_last"] = streak_last
 
     _save_profiles(profiles)
 
@@ -108,11 +141,11 @@ def _stats_payload(username: str) -> Dict[str, Any]:
     today = _today_key()
     day = int(prof["history"].get(today, 0))
     week = _sum_window(prof["history"], 7, today)
-    month = _sum_window(prof["history"], 30, today)
-    total = int(prof.get("total", 0))
-    streak_days = int(prof.get("streak_days", 0))
-    return {"day": day, "week": week, "month": month, "total": total,
-            "streak_days": streak_days, "today_done": day >= 200}
+    # month/total храним, но в UI можно не показывать
+    total = int(prof.get("total", _recompute_total(prof["history"])))
+    streak_days, streak_last = _recompute_streak(prof["history"], today)
+    return {"day": day, "week": week, "month": 0, "total": total,
+            "streak_days": streak_days, "today_done": day >= GOAL_PER_DAY}
 
 
 # ---- endpoints ----
@@ -125,10 +158,10 @@ def api_login():
     password = (js.get("password") or "")
     users = _load_users()
     rec = users.get(username)
-    if not rec or not _verify_password(rec, password):
+    if not rec or (rec.get("password") or "") != password:
         return jsonify({"ok": False, "error": "invalid credentials"}), 200
     session["user"] = username
-    session.permanent = True  # ← сохраняем сессию надолго
+    session.permanent = True
     current_app.logger.info("login: %s", username)
     return jsonify({"ok": True, "user": username})
 
@@ -160,10 +193,10 @@ def api_leaderboard():
     rows = []
     for u in users.keys():
         prof = profiles.get(u) or {}
+        history = prof.get("history", {})
         if window == "total":
-            val = int(prof.get("total", 0))
+            val = sum(int(v) for v in history.values())
         else:
-            history = prof.get("history", {})
             days = 1 if window == "day" else 7 if window == "week" else 30
             val = _sum_window(history, days, today)
         rows.append((u, val))
@@ -172,7 +205,7 @@ def api_leaderboard():
     return jsonify({"ok": True, "window": window, "top": top})
 
 
-def record_added_for_request_user(added: int):
+def record_change_for_request_user(added: int = 0, removed: int = 0):
     u = session.get("user")
-    if u and added > 0:
-        record_added_for_user(u, added)
+    if u:
+        record_change_for_user(u, added=added, removed=removed)
