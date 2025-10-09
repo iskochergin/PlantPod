@@ -10,4 +10,5 @@ test.py
 *.log
 
 dataset_collect/
-__pychache__/
+__pycache__/
+auth/users.json

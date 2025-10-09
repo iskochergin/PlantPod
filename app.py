@@ -1,4 +1,3 @@
-# app.py — основное приложение (спин/модели/загрузка ZIP) + подключение пикера
 import os, re, json, time, shutil, zipfile, threading, logging
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template, send_from_directory, abort
@@ -16,11 +15,18 @@ from threed import (
     _start_background_sweeper, _leafs_under
 )
 
+from datetime import timedelta
+from picker_profile import profile_bp
+
 # ---- Flask ----
 BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, static_folder=str(BASE_DIR / "static"),
             template_folder=str(BASE_DIR / "templates"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_ZIP_MB * 1024 * 1024
+
+app.register_blueprint(profile_bp)
+app.secret_key = app.secret_key or "change-me"
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 
 @app.errorhandler(RequestEntityTooLarge)
