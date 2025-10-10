@@ -355,3 +355,18 @@ a.meta:hover {
     background: #142031;
     color: #9cc3ff;
 }
+
+.pp-auth,
+.pp-auth__login,
+.pp-auth__user {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 520px) {
+  .pp-auth__login .btn,
+  .pp-auth__user .btn {
+    flex: 1 1 100%;
+  }
+  .pp-input { min-width: 110px; }
+}
+
