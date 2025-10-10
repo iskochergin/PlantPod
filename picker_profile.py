@@ -13,7 +13,19 @@ USERS_PATH = AUTH_DIR / "users.json"  # {"user":{"password":"plain"}}
 PROFILES_PATH = AUTH_DIR / "profiles.json"  # создаётся/обновляется автоматически
 AUTH_DIR.mkdir(parents=True, exist_ok=True)
 
-GOAL_PER_DAY = 1  # порог для «огонька»
+GOAL_PER_DAY = 1
+
+MSK_TZ = timezone(timedelta(hours=3))
+
+
+def _now_msk() -> datetime:
+    return datetime.now(MSK_TZ)
+
+
+def _today_key(dt: datetime | None = None) -> str:
+    # ДЕНЬ начинается в 00:00 по Москве
+    dt = dt or _now_msk()
+    return dt.date().isoformat()
 
 
 def _now_utc() -> datetime:
@@ -135,17 +147,35 @@ def record_change_for_user(username: str, added: int = 0, removed: int = 0):
     _save_profiles(profiles)
 
 
+def _sum_current_week_msk(history: Dict[str, int], today_key: str) -> int:
+    """
+    Текущая неделя по МСК: с субботы 00:00 до сегодняшнего дня включительно.
+    (Порог смены недели — в субботу)
+    """
+    today_dt = datetime.fromisoformat(today_key)
+    # Mon=0 ... Sat=5, Sun=6 -> сколько дней прошло с субботы
+    days_since_sat = (today_dt.weekday() - 5) % 7
+    start_dt = today_dt - timedelta(days=days_since_sat)
+    s = 0
+    d = start_dt
+    while d.date() <= today_dt.date():
+        s += int(history.get(d.date().isoformat(), 0))
+        d += timedelta(days=1)
+    return s
+
+
 def _stats_payload(username: str) -> Dict[str, Any]:
     profiles = _load_profiles()
     prof = _ensure_profile(profiles, username)
     today = _today_key()
     day = int(prof["history"].get(today, 0))
-    week = _sum_window(prof["history"], 7, today)
-    # month/total храним, но в UI можно не показывать
+    week = _sum_current_week_msk(prof["history"], today)
     total = int(prof.get("total", _recompute_total(prof["history"])))
     streak_days, streak_last = _recompute_streak(prof["history"], today)
-    return {"day": day, "week": week, "month": 0, "total": total,
-            "streak_days": streak_days, "today_done": day >= GOAL_PER_DAY}
+    return {
+        "day": day, "week": week, "month": 0, "total": total,
+        "streak_days": streak_days, "today_done": day >= GOAL_PER_DAY
+    }
 
 
 # ---- endpoints ----
@@ -196,8 +226,10 @@ def api_leaderboard():
         history = prof.get("history", {})
         if window == "total":
             val = sum(int(v) for v in history.values())
+        elif window == "week":
+            val = _sum_current_week_msk(history, today)
         else:
-            days = 1 if window == "day" else 7 if window == "week" else 30
+            days = 1 if window == "day" else 30
             val = _sum_window(history, days, today)
         rows.append((u, val))
     rows.sort(key=lambda x: x[1], reverse=True)
