@@ -17,9 +17,15 @@
     authBar.className = "pp-auth";
     authBar.id = "authBar";
 
-    // Оба — в начало тулбара: сперва огонь, сразу за ним логин/профиль
+    const hamster = document.createElement("img");
+    hamster.src = "/static/hamster.png";
+    hamster.alt = "logo";
+    hamster.className = "hamster-logo";
+
     toolbar.prepend(authBar);
     toolbar.prepend(streakDock);
+    toolbar.prepend(hamster);
+
 
     // ===== Лидерборд (глобально, один раз)
     const lbWrap = document.createElement("div");
@@ -214,6 +220,11 @@
     const totalCount = $("totalCount");
     const queueSizeEl = $("queueSize");
     const queueBadge = queueSizeEl ? queueSizeEl.parentElement : null;
+    const pageJumpTop = $("pageJump");
+    const btnGoPageTop = $("btnGoPage");
+    const pageJumpBottom = $("pageJumpBottom");
+    const btnGoPageBottom = $("btnGoPageBottom");
+
 
     // Скрыть лишнее (если есть)
     ["placeInput", "licSelect", "sortSelect", "namesBox", "btnCopy", "btnJsonl"].forEach(id => {
@@ -242,6 +253,40 @@
     grid.classList.add("grid");
     grid.style.gridTemplateColumns = "repeat(auto-fill, minmax(260px, 1fr))";
     grid.style.gap = "10px";
+
+    function syncPageInputs() {
+        if (pageJumpTop) pageJumpTop.value = String(state.page || 1);
+        if (pageJumpBottom) pageJumpBottom.value = String(state.page || 1);
+    }
+
+    function goToPageFrom(inputEl) {
+        const val = Number(inputEl?.value || 0);
+        if (Number.isFinite(val) && val >= 1) {
+            showPage(val);
+        }
+    }
+
+    btnGoPageTop?.addEventListener("click", () => goToPageFrom(pageJumpTop));
+    btnGoPageBottom?.addEventListener("click", () => goToPageFrom(pageJumpBottom));
+
+    pageJumpTop?.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") goToPageFrom(pageJumpTop);
+    });
+    pageJumpBottom?.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") goToPageFrom(pageJumpBottom);
+    });
+
+    pageJumpTop?.addEventListener("input", () => {
+        if (pageJumpBottom && document.activeElement !== pageJumpBottom) {
+            pageJumpBottom.value = pageJumpTop.value;
+        }
+    });
+    pageJumpBottom?.addEventListener("input", () => {
+        if (pageJumpTop && document.activeElement !== pageJumpTop) {
+            pageJumpTop.value = pageJumpBottom.value;
+        }
+    });
+
 
     function setLoading(on) {
         grid.innerHTML = "";
@@ -273,6 +318,7 @@
             queueBadge.style.borderColor = has ? "#6f5d2b" : "#1f5134";
             queueBadge.style.color = has ? "#ffe3a1" : "#b3ffd8";
         }
+        syncPageInputs();
     }
 
     async function flushCachesAndSW() {
@@ -463,6 +509,7 @@
 
     async function showPage(p) {
         state.page = p;
+        if (pageJump) pageJump.value = String(state.page);
         updateBadges();
         const key = String(p);
         if (state.cache.has(key)) {
@@ -474,6 +521,7 @@
         }
         prefetch(p + 1);
         prefetch(p + 2);
+        syncPageInputs();
     }
 
     async function prefetch(p) {

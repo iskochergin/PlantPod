@@ -370,3 +370,36 @@ a.meta:hover {
   .pp-input { min-width: 110px; }
 }
 
+/* 2) круглая иконка-хомяка слева от огонька */
+.hamster-logo {
+  width: 44px;             /* высота огонька = 44px */
+  height: 44px;            /* делаем «диаметр» таким же */
+  border-radius: 50%;
+  object-fit: cover;
+  margin-right: 10px;
+  background: #0f1621;
+  border: 1px solid #1a2029;
+}
+
+/* компактный инпут для перехода к странице */
+.pager-input {
+  width: 70px;
+  background: #0f1621;
+  border: 1px solid #1a2029;
+  color: #e6edf3;
+  padding: .45rem .55rem;
+  border-radius: .5rem;
+}
+
+.pager-center {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+}
+
+.pager .spacer { flex: 1; }
+
+.pager-center { display:flex; align-items:center; gap:.6rem; }
+.pager-input { width: 80px; background:#0f1621; border:1px solid #1a2029; color:#e6edf3; padding:.35rem .5rem; border-radius:.4rem; }
+
+

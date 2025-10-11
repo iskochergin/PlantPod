@@ -6,14 +6,17 @@
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <link rel="stylesheet" href="/static/styles.css">
     <link rel="stylesheet" href="/static/picker_auth.css">
+
+    <!-- 1) favicon -->
+    <link rel="icon" type="image/png" href="/static/hamster.png">
+    <link rel="icon" type="image/x-icon" href="/static/hamster.ico">
 </head>
 <body>
 <div class="toolbar">
+
     <input id="taxonInput" type="text" style="min-width:360px"
            placeholder="Таксон: iNat id / GBIF id или URL / латинское имя"
            title="Можно: 257713555 (iNat id), 3118274 или https://www.gbif.org/species/3118274 (GBIF), или латинское имя (напр., Plantago major)">
-<!--    <input id="placeInput" type="text" style="width:150px"-->
-<!--           placeholder="place_id (опц.)" title="ID региона iNaturalist. Можно оставить пустым">-->
     <input id="targetInput" type="number" value="200" min="1" style="width:90px"
            title="Целевое число отобранных фото">
     <select id="licSelect" title="Фильтр лицензий">
@@ -36,8 +39,18 @@
 
 <div class="pager" id="pagerTop">
     <button id="btnPrevTop" class="btn ghost">◀ Prev</button>
-    <span>Page <b id="pageTop">1</b></span>
+
     <div class="spacer"></div>
+
+    <div class="pager-center">
+        <!--        <span>Page <b id="pageTop">1</b></span>-->
+        <span>Page </span>
+        <input id="pageJump" class="pager-input" type="number" min="1" placeholder="№" title="Перейти к странице">
+        <button id="btnGoPage" class="btn ghost" title="Перейти">Go</button>
+    </div>
+
+    <div class="spacer"></div>
+
     <button id="btnNextTop" class="btn ghost">Next ▶</button>
 </div>
 
@@ -45,10 +58,20 @@
 
 <div class="pager" id="pagerBottom">
     <button id="btnPrevBottom" class="btn ghost">◀ Prev</button>
-    <span>Page <b id="pageBottom">1</b></span>
+
     <div class="spacer"></div>
+
+    <div class="pager-center">
+        <span>Page </span>
+        <input id="pageJumpBottom" class="pager-input" type="number" min="1" placeholder="№" title="Перейти к странице">
+        <button id="btnGoPageBottom" class="btn ghost" title="Перейти">Go</button>
+    </div>
+
+    <div class="spacer"></div>
+
     <button id="btnNextBottom" class="btn ghost">Next ▶</button>
 </div>
+
 
 <!-- Скрытая текстовая область — используем только для быстрого копирования URL при необходимости -->
 <textarea id="urlsBox" style="position:absolute; left:-9999px; top:-9999px;"></textarea>
