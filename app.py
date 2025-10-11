@@ -2,6 +2,7 @@ import os, re, json, time, shutil, zipfile, threading, logging
 from pathlib import Path
 from flask import Flask, request, jsonify, render_template, send_from_directory, abort
 from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.serving import WSGIRequestHandler
 
 from threed import (
     CFG, _load_port, UPLOAD_PASSWORD,
@@ -23,6 +24,10 @@ BASE_DIR = Path(__file__).resolve().parent
 app = Flask(__name__, static_folder=str(BASE_DIR / "static"),
             template_folder=str(BASE_DIR / "templates"))
 app.config["MAX_CONTENT_LENGTH"] = MAX_ZIP_MB * 1024 * 1024
+
+# чуть меньше накладных расходов на JSON
+app.config["JSONIFY_PRETTYPRINT_REGULAR"] = False
+app.config["JSON_SORT_KEYS"] = False
 
 app.register_blueprint(profile_bp)
 app.secret_key = app.secret_key or "change-me"
@@ -240,4 +245,13 @@ except Exception:
 _start_background_sweeper()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=_load_port(), debug=False)
+    WSGIRequestHandler.protocol_version = "HTTP/1.1"
+
+    app.run(
+        host="0.0.0.0",
+        port=_load_port(),
+        debug=False,
+        threaded=True,
+        processes=1,
+        use_reloader=False
+    )

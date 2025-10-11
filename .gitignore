@@ -12,3 +12,4 @@ test.py
 dataset_collect/
 __pycache__/
 auth/users.json
+auth/profiles.json
